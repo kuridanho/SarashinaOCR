@@ -1,0 +1,35 @@
+[project]
+name = "sarashina-ocr-engine"
+version = "1.0.0"
+description = "Sarashina2.2-OCR inference sidecar (MLX 4bit) for SarashinaOCR.app"
+requires-python = ">=3.12,<3.13"
+license = { text = "MIT" }
+dependencies = [
+  "mlx-vlm==0.6.6",
+  "transformers==5.20.2",
+  "torch==2.14.1",
+  "torchvision==0.29.1",
+  "pillow>=11",
+  "numpy>=2",
+  "protobuf>=6",
+  "sentencepiece>=0.2",
+  "huggingface_hub>=2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+sarashina-ocr = "ocr_engine.cli:main"
+sarashina-ocr-engine = "ocr_engine.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["ocr_engine*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

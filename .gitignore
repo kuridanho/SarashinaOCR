@@ -1,0 +1,21 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# Models and scratch output
+models/
+out/
+data/
+*.log
+
+# macOS
+.DS_Store
+
+# Swift
+app/.build/
+app/.swiftpm/
+build/
+dist/

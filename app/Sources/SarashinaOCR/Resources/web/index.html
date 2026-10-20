@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="color-scheme" content="light dark">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="vendor/katex.min.css">
+  <style>
+    :root {
+      --text: #1f2328;
+      --muted: #59636e;
+      --bg: #ffffff;
+      --border: #d8dee4;
+      --code-bg: #f6f8fa;
+      --accent: #0b6bcb;
+      --zoom: 1;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --text: #e6edf3;
+        --muted: #9198a1;
+        --bg: #1e1f22;
+        --border: #3d444d;
+        --code-bg: #26282c;
+        --accent: #6cb6ff;
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic",
+                   "Noto Sans JP", sans-serif;
+      font-size: calc(14.5px * var(--zoom));
+      line-height: 1.75;
+      -webkit-font-smoothing: antialiased;
+      overflow-wrap: anywhere;
+    }
+    #content { padding: 20px 26px 60px; max-width: 960px; margin: 0 auto; }
+    h1, h2, h3, h4, h5, h6 { line-height: 1.35; margin: 1.5em 0 0.6em; font-weight: 650; }
+    h1 { font-size: 1.75em; border-bottom: 1px solid var(--border); padding-bottom: 0.3em; }
+    h2 { font-size: 1.4em; border-bottom: 1px solid var(--border); padding-bottom: 0.25em; }
+    h3 { font-size: 1.18em; }
+    p { margin: 0.7em 0; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    hr { border: 0; border-top: 1px solid var(--border); margin: 1.6em 0; }
+    blockquote {
+      margin: 1em 0; padding: 0.2em 1em; color: var(--muted);
+      border-left: 3px solid var(--border);
+    }
+    code {
+      font-family: "SF Mono", ui-monospace, Menlo, monospace;
+      font-size: 0.9em; background: var(--code-bg);
+      padding: 0.15em 0.35em; border-radius: 4px;
+    }
+    pre { background: var(--code-bg); padding: 12px 14px; border-radius: 8px; overflow-x: auto; }
+    pre code { padding: 0; background: transparent; }
+    table {
+      border-collapse: collapse; margin: 1.1em 0; width: 100%;
+      font-size: 0.94em; display: block; overflow-x: auto;
+    }
+    th, td { border: 1px solid var(--border); padding: 7px 10px; vertical-align: top; }
+    th { background: color-mix(in srgb, var(--code-bg) 80%, transparent); font-weight: 650; }
+    img { max-width: 100%; height: auto; border-radius: 6px; border: 1px solid var(--border); }
+    ul, ol { padding-left: 1.6em; margin: 0.6em 0; }
+    li { margin: 0.25em 0; }
+    .katex-display { overflow-x: auto; overflow-y: hidden; padding: 0.3em 0; }
+    .empty-state {
+      color: var(--muted); display: flex; align-items: center; justify-content: center;
+      height: 60vh; font-size: 0.95em; text-align: center; padding: 0 40px;
+    }
+    ::selection { background: color-mix(in srgb, var(--accent) 28%, transparent); }
+  </style>
+</head>
+<body>
+  <div id="content"><div class="empty-state">結果がここに表示されます</div></div>
+  <script src="vendor/markdown-it.min.js"></script>
+  <script src="vendor/katex.min.js"></script>
+  <script src="vendor/texmath.js"></script>
+  <script src="vendor/dompurify.min.js"></script>
+  <script>
+    (function () {
+      var md = window.markdownit({
+        html: true,
+        linkify: true,
+        breaks: false,
+        typographer: false
+      });
+      if (window.texmath && window.katex) {
+        md.use(window.texmath, {
+          engine: window.katex,
+          delimiters: 'dollars',
+          katexOptions: { throwOnError: false, strict: false }
+        });
+      }
+
+      window.renderMarkdown = function (text) {
+        var source = text || '';
+        var content = document.getElementById('content');
+        if (!source.trim()) {
+          content.innerHTML = '<div class="empty-state">結果がここに表示されます</div>';
+          return;
+        }
+        var html = md.render(source);
+        var safe = window.DOMPurify
+          ? window.DOMPurify.sanitize(html, {
+              USE_PROFILES: { html: true },
+              ADD_TAGS: ['table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td', 'colgroup', 'col'],
+              ADD_ATTR: ['rowspan', 'colspan', 'align', 'colspan', 'scope']
+            })
+          : html;
+        content.innerHTML = safe;
+        content.querySelectorAll('a').forEach(function (a) {
+          a.target = '_blank';
+          a.rel = 'noopener noreferrer';
+        });
+        content.querySelectorAll('table').forEach(function (table) {
+          table.setAttribute('cellspacing', '0');
+        });
+      };
+
+      window.setZoom = function (percent) {
+        var value = Math.max(0.8, Math.min(2.0, (percent || 100) / 100));
+        document.documentElement.style.setProperty('--zoom', String(value));
+      };
+    })();
+  </script>
+</body>
+</html>

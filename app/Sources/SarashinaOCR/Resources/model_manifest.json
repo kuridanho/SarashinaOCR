@@ -1,0 +1,128 @@
+{
+  "name": "sarashina2.2-ocr-mlx-4bit",
+  "repo": "tokimoa/sarashina2.2-ocr-mlx-4bit",
+  "revision": "6585fb9ed1fbb263eb39c57a2b45c5c21a8aadff",
+  "total_bytes": 2980694402,
+  "license": "MIT",
+  "quantization": {
+    "bits": 4,
+    "group_size": 64,
+    "mode": "affine"
+  },
+  "files": [
+    {
+      "path": "README.md",
+      "size": 3729,
+      "sha256": "5037a3b5378cfebb67fb59c036701f41b11363c827f886e109661ea7fd2d867b",
+      "url": "https://huggingface.co/tokimoa/sarashina2.2-ocr-mlx-4bit/resolve/6585fb9ed1fbb263eb39c57a2b45c5c21a8aadff/README.md"
+    },
+    {
+      "path": "chat_template.jinja",
+      "size": 1721,
+      "sha256": "88ade0cda16c5731503917d66cea34750eac451f3a5c7494c14d29e891ca9f40",
+      "url": "https://huggingface.co/tokimoa/sarashina2.2-ocr-mlx-4bit/resolve/6585fb9ed1fbb263eb39c57a2b45c5c21a8aadff/chat_template.jinja"
+    },
+    {
+      "path": "config.json",
+      "size": 2443,
+      "sha256": "df8674a9a18fa62c34a37e85c5638e0be11b5a80aed439a48c579eb145d72f0d",
+      "url": "https://huggingface.co/tokimoa/sarashina2.2-ocr-mlx-4bit/resolve/6585fb9ed1fbb263eb39c57a2b45c5c21a8aadff/config.json"
+    },
+    {
+      "path": "configuration_sarashina2_vision.py",
+      "size": 3867,
+      "sha256": "61d7ca63b32b5bd1a96f3ab64dfaefbf62a7d851a35cbfe068e738a815fc7187",
+      "url": "https://huggingface.co/tokimoa/sarashina2.2-ocr-mlx-4bit/resolve/6585fb9ed1fbb263eb39c57a2b45c5c21a8aadff/configuration_sarashina2_vision.py"
+    },
+    {
+      "path": "generation_config.json",
+      "size": 154,
+      "sha256": "f6af8ddb37a7c87ff164a8481e495312049ebb1fb4830c15f8e1f9da1621a7d1",
+      "url": "https://huggingface.co/tokimoa/sarashina2.2-ocr-mlx-4bit/resolve/6585fb9ed1fbb263eb39c57a2b45c5c21a8aadff/generation_config.json"
+    },
+    {
+      "path": "model.safetensors",
+      "size": 2977873667,
+      "sha256": "decba5c62f7e4241a15ec307fe583b954cd6934bcee9ecb1c0bd596b9cb645c4",
+      "url": "https://huggingface.co/tokimoa/sarashina2.2-ocr-mlx-4bit/resolve/6585fb9ed1fbb263eb39c57a2b45c5c21a8aadff/model.safetensors"
+    },
+    {
+      "path": "model.safetensors.index.json",
+      "size": 87607,
+      "sha256": "47399fe77c6efa1c224272b80d5b42536052f43229e62db72a02da46d19bece8",
+      "url": "https://huggingface.co/tokimoa/sarashina2.2-ocr-mlx-4bit/resolve/6585fb9ed1fbb263eb39c57a2b45c5c21a8aadff/model.safetensors.index.json"
+    },
+    {
+      "path": "preprocessor_config.json",
+      "size": 646,
+      "sha256": "d083014f358e856319af56fc2bc26fb6a819cb52ff8149a766591aee3f3931ce",
+      "url": "https://huggingface.co/tokimoa/sarashina2.2-ocr-mlx-4bit/resolve/6585fb9ed1fbb263eb39c57a2b45c5c21a8aadff/preprocessor_config.json"
+    },
+    {
+      "path": "processing_sarashina2_vision.py",
+      "size": 32207,
+      "sha256": "e92e617957590210cef0abbcbe0a9248fdb56bbc46f4b0aa35a1d89274bf71e2",
+      "url": "https://huggingface.co/tokimoa/sarashina2.2-ocr-mlx-4bit/resolve/6585fb9ed1fbb263eb39c57a2b45c5c21a8aadff/processing_sarashina2_vision.py"
+    },
+    {
+      "path": "processor_config.json",
+      "size": 1747,
+      "sha256": "2010ba2fe4cb5358b696c86a3ea3010662eaa2ef12f6df0c45bb4cebf953ad57",
+      "url": "https://huggingface.co/tokimoa/sarashina2.2-ocr-mlx-4bit/resolve/6585fb9ed1fbb263eb39c57a2b45c5c21a8aadff/processor_config.json"
+    },
+    {
+      "path": "sarashina2_vision/__init__.py",
+      "size": 954,
+      "sha256": "14f9df3870a7e3120dab0ff9aeedfeb811ec58a0e63f1adbc0fe5bbaa546ac10",
+      "url": "https://huggingface.co/tokimoa/sarashina2.2-ocr-mlx-4bit/resolve/6585fb9ed1fbb263eb39c57a2b45c5c21a8aadff/sarashina2_vision/__init__.py"
+    },
+    {
+      "path": "sarashina2_vision/config.py",
+      "size": 2577,
+      "sha256": "6822bc8d6fa20813fc6ea760d2b602105ead331a7a1265c697c037771bc9ea0a",
+      "url": "https://huggingface.co/tokimoa/sarashina2.2-ocr-mlx-4bit/resolve/6585fb9ed1fbb263eb39c57a2b45c5c21a8aadff/sarashina2_vision/config.py"
+    },
+    {
+      "path": "sarashina2_vision/language.py",
+      "size": 17998,
+      "sha256": "4211198b2528f04ef338ee638dfb28ea239f182b20c6bd0874ff4714fbb60f99",
+      "url": "https://huggingface.co/tokimoa/sarashina2.2-ocr-mlx-4bit/resolve/6585fb9ed1fbb263eb39c57a2b45c5c21a8aadff/sarashina2_vision/language.py"
+    },
+    {
+      "path": "sarashina2_vision/sarashina2_vision.py",
+      "size": 5767,
+      "sha256": "312af2af68e95c5c86eae71e8d807e37f68fb10d7f776ea31372250f311e07f0",
+      "url": "https://huggingface.co/tokimoa/sarashina2.2-ocr-mlx-4bit/resolve/6585fb9ed1fbb263eb39c57a2b45c5c21a8aadff/sarashina2_vision/sarashina2_vision.py"
+    },
+    {
+      "path": "sarashina2_vision/vision.py",
+      "size": 10255,
+      "sha256": "30f3062e44705ebcab14b755516a66bed4762b26f7664b7bd2934cb0bf53bfc7",
+      "url": "https://huggingface.co/tokimoa/sarashina2.2-ocr-mlx-4bit/resolve/6585fb9ed1fbb263eb39c57a2b45c5c21a8aadff/sarashina2_vision/vision.py"
+    },
+    {
+      "path": "special_tokens_map.json",
+      "size": 968,
+      "sha256": "30bf8256f9a1eb3287af2a9b7940465e29a38aad4a459a3e773bb3a14bd34c0f",
+      "url": "https://huggingface.co/tokimoa/sarashina2.2-ocr-mlx-4bit/resolve/6585fb9ed1fbb263eb39c57a2b45c5c21a8aadff/special_tokens_map.json"
+    },
+    {
+      "path": "tokenizer.json",
+      "size": 2646222,
+      "sha256": "92ea1c196cc36ee9ab8f1b8cbe7f35ef440596f044833f1079144cf0d3623683",
+      "url": "https://huggingface.co/tokimoa/sarashina2.2-ocr-mlx-4bit/resolve/6585fb9ed1fbb263eb39c57a2b45c5c21a8aadff/tokenizer.json"
+    },
+    {
+      "path": "tokenizer_config.json",
+      "size": 768,
+      "sha256": "352971c0b0fc924a9a2398c32c042cfe6bffa24e9ed10b2a920d960f40386c9d",
+      "url": "https://huggingface.co/tokimoa/sarashina2.2-ocr-mlx-4bit/resolve/6585fb9ed1fbb263eb39c57a2b45c5c21a8aadff/tokenizer_config.json"
+    },
+    {
+      "path": "video_preprocessor_config.json",
+      "size": 1105,
+      "sha256": "315c1573bb48c8db083bfe3b07fca36525fb21e9e6fd696dab75f038d1812c98",
+      "url": "https://huggingface.co/tokimoa/sarashina2.2-ocr-mlx-4bit/resolve/6585fb9ed1fbb263eb39c57a2b45c5c21a8aadff/video_preprocessor_config.json"
+    }
+  ]
+}

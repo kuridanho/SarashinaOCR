@@ -1,0 +1,261 @@
+import AppKit
+import XCTest
+@testable import SarashinaOCR
+
+final class ModelsTests: XCTestCase {
+    func testEngineFrameDecoding() throws {
+        let json = """
+        {"v":1,"id":"req-1","event":"token","data":{"text":"こんにちは"}}
+        """
+        let frame = try JSONDecoder().decode(EngineFrame.self, from: Data(json.utf8))
+        XCTAssertEqual(frame.id, "req-1")
+        XCTAssertEqual(frame.event, "token")
+        XCTAssertEqual(frame.data.objectValue?["text"]?.stringValue, "こんにちは")
+    }
+
+    func testEngineResultDecodingUsesSnakeCase() throws {
+        let json = """
+        {
+          "raw": "# 見出し",
+          "markdown": "# 見出し",
+          "text": "見出し",
+          "figures": [],
+          "warnings": [],
+          "cancelled": false,
+          "image": {"width": 100, "height": 200, "original_width": 100, "original_height": 200, "visual_tokens": 40},
+          "stats": {"output_tokens": 12, "tok_per_s": 40.5}
+        }
+        """
+        let result = try JSONDecoder.engine.decode(EngineOCRResult.self, from: Data(json.utf8))
+        XCTAssertEqual(result.stats.outputTokens, 12)
+        XCTAssertEqual(result.image.visualTokens, 40)
+        XCTAssertEqual(result.image.originalHeight, 200)
+    }
+
+    func testPresetMaxPixels() {
+        XCTAssertEqual(OCRPreset.high.maxPixels, 2_458_624)
+        XCTAssertEqual(OCRPreset.standard.maxPixels, 1_324_960)
+        XCTAssertEqual(OCRPreset.fast.maxPixels, 705_600)
+    }
+
+    func testBundledWebAssetsAndManifest() throws {
+        let index = try XCTUnwrap(WebResources.indexURL)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: index.path))
+        let root = try XCTUnwrap(WebResources.rootURL)
+        for name in [
+            "vendor/markdown-it.min.js",
+            "vendor/katex.min.js",
+            "vendor/katex.min.css",
+            "vendor/texmath.js",
+            "vendor/dompurify.min.js"
+        ] {
+            XCTAssertTrue(
+                FileManager.default.fileExists(atPath: root.appendingPathComponent(name).path),
+                "missing \(name)"
+            )
+        }
+        let manifest = try ModelManifest.bundled()
+        XCTAssertEqual(manifest.revision, "6585fb9ed1fbb263eb39c57a2b45c5c21a8aadff")
+        XCTAssertFalse(manifest.files.isEmpty)
+    }
+}
+
+final class DocumentStoreTests: XCTestCase {
+    private var databaseURL: URL!
+
+    override func setUpWithError() throws {
+        databaseURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sarashina-test-\(UUID().uuidString).sqlite")
+    }
+
+    override func tearDownWithError() throws {
+        if let databaseURL {
+            try? FileManager.default.removeItem(at: databaseURL)
+            try? FileManager.default.removeItem(at: URL(fileURLWithPath: databaseURL.path + "-wal"))
+            try? FileManager.default.removeItem(at: URL(fileURLWithPath: databaseURL.path + "-shm"))
+        }
+    }
+
+    func testRoundTripAndDelete() throws {
+        let store = try DocumentStore(url: databaseURL)
+        let result = StoredResult(
+            id: "result-1",
+            markdown: "# 請求書\n\n![図1](assets/p001/fig-001.png)",
+            raw: "# 請求書",
+            text: "請求書",
+            preset: "high",
+            stats: OCRStats(outputTokens: 42, seconds: 3.5, tokPerSec: 12),
+            figures: [
+                FigureInfo(index: 1, bbox: [10, 20, 300, 400], bboxPx: [1, 2, 3, 4],
+                           path: "assets/p001/fig-001.png", absolutePath: "/tmp/fig-001.png")
+            ],
+            warnings: [WarningInfo(code: "W0001", message: "テスト")],
+            createdAt: 100
+        )
+        let page = PageRecord(
+            id: "page-1", index: 0, imagePath: "/tmp/source.png",
+            processedPath: "/tmp/processed.png", width: 100, height: 200,
+            ocrState: .done, result: result
+        )
+        let document = DocumentRecord(
+            id: "doc-1", title: "テスト", kind: "image", sourcePath: "/tmp/source.png",
+            pageCount: 1, createdAt: 1, updatedAt: 2, pages: [page]
+        )
+
+        try store.save(document)
+        let loaded = try store.loadDocuments()
+        XCTAssertEqual(loaded.count, 1)
+        XCTAssertEqual(loaded.first?.title, "テスト")
+        XCTAssertEqual(loaded.first?.pages.first?.result?.stats.outputTokens, 42)
+        XCTAssertEqual(loaded.first?.pages.first?.result?.figures.first?.bbox, [10, 20, 300, 400])
+        XCTAssertEqual(loaded.first?.pages.first?.result?.warnings.first?.code, "W0001")
+
+        try store.deleteResult(pageID: "page-1")
+        XCTAssertNil(try store.loadDocuments().first?.pages.first?.result)
+
+        try store.delete(documentID: "doc-1")
+        XCTAssertTrue(try store.loadDocuments().isEmpty)
+    }
+}
+
+final class ExportServiceTests: XCTestCase {
+    func testCombinedMarkdownAndText() {
+        let pages = [
+            PageRecord(
+                id: "p1", index: 0, imagePath: "/tmp/a", processedPath: nil,
+                width: 1, height: 1, ocrState: .done,
+                result: StoredResult(
+                    id: "r1", markdown: "# 一", raw: "# 一", text: "一",
+                    preset: "high", stats: .empty, figures: [], warnings: [], createdAt: 0
+                )
+            ),
+            PageRecord(
+                id: "p2", index: 1, imagePath: "/tmp/b", processedPath: nil,
+                width: 1, height: 1, ocrState: .done,
+                result: StoredResult(
+                    id: "r2", markdown: "# 二", raw: "# 二", text: "二",
+                    preset: "high", stats: .empty, figures: [], warnings: [], createdAt: 0
+                )
+            )
+        ]
+        let markdown = ExportService.combinedMarkdown(pages: pages)
+        XCTAssertTrue(markdown.contains("## p.1"))
+        XCTAssertTrue(markdown.contains("## p.2"))
+        XCTAssertTrue(markdown.contains("---"))
+        let text = ExportService.combinedText(pages: pages)
+        XCTAssertTrue(text.contains("一"))
+        XCTAssertTrue(text.contains("二"))
+    }
+}
+
+final class PreprocessServiceTests: XCTestCase {
+    func testPerspectiveCorrectionWritesImage() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sarashina-preprocess-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let source = directory.appendingPathComponent("source.png")
+        try makeImage(width: 400, height: 300).write(to: source)
+
+        let destination = directory.appendingPathComponent("corrected.png")
+        let quad = [
+            CGPoint(x: 0.05, y: 0.05),
+            CGPoint(x: 0.95, y: 0.05),
+            CGPoint(x: 0.95, y: 0.95),
+            CGPoint(x: 0.05, y: 0.95)
+        ]
+        let output = try PreprocessService.correctPerspective(
+            source: source, destination: destination, quad: quad
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: destination.path))
+        XCTAssertGreaterThan(output.width, 100)
+        XCTAssertGreaterThan(output.height, 100)
+    }
+
+    func testRotationSwapsDimensions() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sarashina-rotate-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let imageURL = directory.appendingPathComponent("page.png")
+        try makeImage(width: 400, height: 300).write(to: imageURL)
+        let rotated = try PreprocessService.rotate(
+            imageAt: imageURL, quarterTurns: 1, destination: imageURL
+        )
+        XCTAssertEqual(rotated.width, 300)
+        XCTAssertEqual(rotated.height, 400)
+    }
+
+    func testPDFRasterizationKeepsPageUpright() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sarashina-pdf-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let pdfURL = directory.appendingPathComponent("marker.pdf")
+        try makeMarkerPDF(at: pdfURL)
+        let pages = try PreprocessService.rasterizePDF(source: pdfURL, into: directory)
+        XCTAssertEqual(pages.count, 1)
+
+        let image = try XCTUnwrap(NSImage(contentsOf: pages[0].url))
+        var rect = CGRect(origin: .zero, size: image.size)
+        let cgImage = try XCTUnwrap(
+            image.cgImage(forProposedRect: &rect, context: nil, hints: nil)
+        )
+        XCTAssertTrue(
+            isDark(cgImage, x: cgImage.width / 2, y: cgImage.height / 8),
+            "the marker drawn at the top of the PDF must stay at the top"
+        )
+        XCTAssertFalse(
+            isDark(cgImage, x: cgImage.width / 2, y: cgImage.height * 7 / 8),
+            "the bottom of the page must stay blank"
+        )
+    }
+
+    private func makeMarkerPDF(at url: URL) throws {
+        var mediaBox = CGRect(x: 0, y: 0, width: 200, height: 300)
+        guard let consumer = CGDataConsumer(url: url as CFURL),
+              let context = CGContext(consumer: consumer, mediaBox: &mediaBox, nil) else {
+            throw NSError(domain: "test", code: 4)
+        }
+        context.beginPDFPage(nil)
+        context.setFillColor(CGColor(gray: 1, alpha: 1))
+        context.fill(mediaBox)
+        context.setFillColor(CGColor(gray: 0, alpha: 1))
+        context.fill(CGRect(x: 20, y: 220, width: 160, height: 60))
+        context.endPDFPage()
+        context.closePDF()
+    }
+
+    private func isDark(_ image: CGImage, x: Int, y: Int) -> Bool {
+        guard let data = image.dataProvider?.data,
+              let bytes = CFDataGetBytePtr(data) else { return false }
+        let offset = y * image.bytesPerRow + x * (image.bitsPerPixel / 8)
+        guard offset + 2 < CFDataGetLength(data) else { return false }
+        return bytes[offset] < 64 && bytes[offset + 1] < 64 && bytes[offset + 2] < 64
+    }
+
+    private func makeImage(width: Int, height: Int) throws -> Data {
+        guard let context = CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            throw NSError(domain: "test", code: 1)
+        }
+        context.setFillColor(CGColor(gray: 1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        context.setFillColor(CGColor(gray: 0, alpha: 1))
+        context.fill(CGRect(x: 40, y: 40, width: 320, height: 220))
+        guard let image = context.makeImage() else {
+            throw NSError(domain: "test", code: 2)
+        }
+        let rep = NSBitmapImageRep(cgImage: image)
+        guard let data = rep.representation(using: .png, properties: [:]) else {
+            throw NSError(domain: "test", code: 3)
+        }
+        return data
+    }
+}

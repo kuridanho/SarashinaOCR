@@ -10,12 +10,15 @@ struct ResultPane: View {
         VStack(spacing: 0) {
             header
             Divider()
-            if let result, !result.warnings.isEmpty {
+            if app.resultTab != .document, let result, !result.warnings.isEmpty {
                 WarningBanner(warnings: result.warnings)
                 Divider()
             }
             content
-            if let result {
+            if app.resultTab == .document {
+                Divider()
+                documentFooter
+            } else if let result {
                 Divider()
                 footer(result)
             }
@@ -32,11 +35,11 @@ struct ResultPane: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(width: 200)
+            .frame(width: 260)
 
             Spacer()
 
-            if app.resultTab == .preview {
+            if app.resultTab == .preview || app.resultTab == .document {
                 Button {
                     app.fontSize = max(80, app.fontSize - 10)
                 } label: {
@@ -65,8 +68,10 @@ struct ResultPane: View {
                 Image(systemName: "doc.on.doc")
             }
             .buttonStyle(.borderless)
-            .disabled(app.previewMarkdown.isEmpty)
-            .help("Markdown をクリップボードへコピー (⌘C)")
+            .disabled(app.copyableMarkdown.isEmpty)
+            .help(app.resultTab == .document
+                  ? "全ページの Markdown をクリップボードへコピー (⌘C)"
+                  : "Markdown をクリップボードへコピー (⌘C)")
             .accessibilityLabel("Markdown をコピー")
         }
         .padding(.horizontal, 12)
@@ -75,9 +80,28 @@ struct ResultPane: View {
 
     @ViewBuilder
     private var content: some View {
-        if app.isRunning {
+        if app.resultTab == .document {
+            if !app.documentPreviewMarkdown.isEmpty {
+                MarkdownWebView(
+                    markdown: app.documentPreviewMarkdown,
+                    baseDirectory: app.previewBaseDirectory,
+                    zoom: app.fontSize / 100
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if app.isRunning {
+                VStack(spacing: 10) {
+                    ProgressView()
+                    Text("最初のページが完了すると全体を表示します")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ResultEmptyView()
+            }
+        } else if app.isStreamingSelectedPage {
             switch app.resultTab {
-            case .preview:
+            case .preview, .document:
                 MarkdownWebView(
                     markdown: app.streamingMarkdown,
                     baseDirectory: app.previewBaseDirectory,
@@ -92,7 +116,7 @@ struct ResultPane: View {
             }
         } else if let result {
             switch app.resultTab {
-            case .preview:
+            case .preview, .document:
                 MarkdownWebView(
                     markdown: result.markdown,
                     baseDirectory: app.previewBaseDirectory,
@@ -108,9 +132,32 @@ struct ResultPane: View {
             case .figures:
                 FigureGallery(figures: result.figures)
             }
+        } else if app.isRunning {
+            VStack(spacing: 10) {
+                ProgressView()
+                Text(app.isBatchRunning ? "連続スキャン中…" : "処理中…")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ResultEmptyView()
         }
+    }
+
+    private var documentFooter: some View {
+        let document = app.selectedDocument
+        let completed = document?.completedPages ?? 0
+        let total = document?.pageCount ?? 0
+        return HStack(spacing: 12) {
+            Label("\(completed)/\(total) ページ", systemImage: "doc.text")
+            Spacer()
+            Text("ページ番号は原本に準拠")
+                .foregroundStyle(.secondary)
+        }
+        .font(.caption)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
     }
 
     private func footer(_ result: StoredResult) -> some View {

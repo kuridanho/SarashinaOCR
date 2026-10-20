@@ -35,6 +35,12 @@ struct StatusBar: View {
                     .foregroundStyle(.secondary)
             }
 
+            if app.isBatchRunning {
+                Text("連続 \(app.batchCurrent)/\(app.batchTotal)")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+
             Text("画像は送信されません")
                 .font(.caption2)
                 .foregroundStyle(.secondary)

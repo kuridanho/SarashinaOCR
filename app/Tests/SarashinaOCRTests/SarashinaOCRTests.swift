@@ -146,6 +146,68 @@ final class ExportServiceTests: XCTestCase {
         XCTAssertTrue(text.contains("一"))
         XCTAssertTrue(text.contains("二"))
     }
+
+    func testCombinedPreviewUsesOriginalPageNumbersAndDropsOCRPageNumber() throws {
+        func page(index: Int, markdown: String?) -> PageRecord {
+            let result = markdown.map {
+                StoredResult(
+                    id: "r\(index)", markdown: $0, raw: $0, text: $0,
+                    preset: "high", stats: .empty, figures: [], warnings: [], createdAt: 0
+                )
+            }
+            return PageRecord(
+                id: "p\(index)", index: index, imagePath: "/tmp/\(index)",
+                processedPath: nil, width: 100, height: 100,
+                ocrState: result == nil ? .pending : .done, result: result
+            )
+        }
+
+        let pages = [
+            page(index: 0, markdown: "一\n\n1"),
+            page(index: 1, markdown: nil),
+            page(index: 2, markdown: "三\n\n3"),
+            page(index: 3, markdown: nil)
+        ]
+        let markdown = ExportService.combinedPreviewMarkdown(pages: pages)
+
+        XCTAssertTrue(markdown.contains("p.1 / 4"))
+        XCTAssertTrue(markdown.contains("p.2 / 4 ・ 未処理"))
+        XCTAssertTrue(markdown.contains("p.3 / 4"))
+        XCTAssertTrue(markdown.contains("p.4 / 4 ・ 未処理"))
+        XCTAssertFalse(markdown.contains("一\n\n1"))
+        XCTAssertFalse(markdown.contains("三\n\n3"))
+        let firstPage = try XCTUnwrap(markdown.range(of: "p.1 / 4")?.lowerBound)
+        let thirdPage = try XCTUnwrap(markdown.range(of: "p.3 / 4")?.lowerBound)
+        XCTAssertLessThan(firstPage, thirdPage)
+    }
+}
+
+final class BatchOCRPlanningTests: XCTestCase {
+    func testBatchSkipsPagesThatAlreadyHaveResults() {
+        let doneResult = StoredResult(
+            id: "r1", markdown: "# 完了", raw: "# 完了", text: "完了",
+            preset: "high", stats: .empty, figures: [], warnings: [], createdAt: 0
+        )
+        let pages = [
+            PageRecord(
+                id: "p1", index: 0, imagePath: "/tmp/1", processedPath: nil,
+                width: 100, height: 100, ocrState: .done, result: doneResult
+            ),
+            PageRecord(
+                id: "p2", index: 1, imagePath: "/tmp/2", processedPath: nil,
+                width: 100, height: 100, ocrState: .pending, result: nil
+            ),
+            PageRecord(
+                id: "p3", index: 2, imagePath: "/tmp/3", processedPath: nil,
+                width: 100, height: 100, ocrState: .failed, result: nil
+            )
+        ]
+        let document = DocumentRecord(
+            id: "doc", title: "PDF", kind: "pdf", sourcePath: "/tmp/source.pdf",
+            pageCount: 3, createdAt: 0, updatedAt: 0, pages: pages
+        )
+        XCTAssertEqual(AppState.pagesForBatch(in: document).map(\.index), [1, 2])
+    }
 }
 
 final class PreprocessServiceTests: XCTestCase {

@@ -132,6 +132,14 @@ struct PreviewPane: View {
                 Spacer(minLength: 4)
 
                 Button {
+                    app.runAllPages()
+                } label: {
+                    Label("連続スキャン", systemImage: "rectangle.stack")
+                }
+                .help("未処理のページを上から順にスキャン")
+                .disabled(!app.canRunAllPages)
+
+                Button {
                     showCropSheet = true
                 } label: {
                     Label("4隅", systemImage: "rectangle.dashed")
@@ -168,14 +176,24 @@ struct PreviewPane: View {
                             .font(.callout)
                             .lineLimit(1)
                         Spacer()
+                        if app.isBatchRunning {
+                            Text("\(app.batchCurrent)/\(app.batchTotal) ページ")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
                         Text("\(app.statusTokens) tok")
                             .font(.caption.monospacedDigit())
                         Text(Self.duration(app.statusElapsed))
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(.secondary)
                     }
-                    ProgressView()
-                        .progressViewStyle(.linear)
+                    if app.isBatchRunning {
+                        ProgressView(value: app.batchProgress)
+                            .progressViewStyle(.linear)
+                    } else {
+                        ProgressView()
+                            .progressViewStyle(.linear)
+                    }
                 }
                 .transition(.opacity)
             } else if let result = app.selectedResult {

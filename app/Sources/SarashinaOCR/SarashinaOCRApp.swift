@@ -70,6 +70,10 @@ struct SarashinaCommands: Commands {
             .keyboardShortcut("r", modifiers: .command)
             .disabled(!app.isRunning && !app.canRunOCR)
 
+            Button("未処理ページを連続スキャン") { app.runAllPages() }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+                .disabled(!app.canRunAllPages)
+
             Button("停止") { app.cancelOCR() }
                 .keyboardShortcut(".", modifiers: .command)
                 .disabled(!app.isRunning)

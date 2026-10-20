@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 
 enum ResultTab: String, CaseIterable, Identifiable {
     case preview
+    case document
     case raw
     case figures
 
@@ -12,7 +13,8 @@ enum ResultTab: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .preview: return "プレビュー"
+        case .preview: return "ページ"
+        case .document: return "全体"
         case .raw: return "生テキスト"
         case .figures: return "図"
         }
@@ -35,6 +37,10 @@ final class AppState: ObservableObject {
 
     // Runtime
     @Published private(set) var isRunning = false
+    @Published private(set) var isBatchRunning = false
+    @Published private(set) var batchCurrent = 0
+    @Published private(set) var batchTotal = 0
+    @Published private(set) var batchCompleted = 0
     @Published private(set) var isImporting = false
     @Published private(set) var streamingMarkdown = ""
     @Published private(set) var stageText = ""
@@ -80,6 +86,9 @@ final class AppState: ObservableObject {
 
     private var store: DocumentStore?
     private var currentRequestID: String?
+    private var activePageID: String?
+    private var cancelRequested = false
+    private var runTask: Task<Void, Never>?
     private var tokenBuffer = ""
     private var lastFlush = Date.distantPast
     private var startedAt = Date()
@@ -165,8 +174,24 @@ final class AppState: ObservableObject {
     }
 
     var previewMarkdown: String {
-        if isRunning { return streamingMarkdown }
+        if isStreamingSelectedPage { return streamingMarkdown }
         return selectedResult?.markdown ?? ""
+    }
+
+    var documentPreviewMarkdown: String {
+        guard let document = selectedDocument, document.hasResults else { return "" }
+        return ExportService.combinedPreviewMarkdown(pages: document.pages)
+    }
+
+    var copyableMarkdown: String {
+        if resultTab == .document {
+            guard let document = selectedDocument else { return "" }
+            return ExportService.combinedMarkdown(
+                pages: document.pages,
+                includePageHeadings: includePageHeadings
+            )
+        }
+        return previewMarkdown
     }
 
     var previewBaseDirectory: URL? {
@@ -189,6 +214,32 @@ final class AppState: ObservableObject {
         !isRunning && selectedPage != nil && modelManager.modelDirectory != nil && !isImporting
     }
 
+    var pendingPages: [PageRecord] {
+        selectedDocument.map(Self.pagesForBatch) ?? []
+    }
+
+    nonisolated static func pagesForBatch(in document: DocumentRecord) -> [PageRecord] {
+        document.pages.filter { $0.result == nil }
+    }
+
+    var pendingPageCount: Int {
+        pendingPages.count
+    }
+
+    var canRunAllPages: Bool {
+        !isRunning && !isImporting && pageCount > 1 && pendingPageCount > 0
+            && modelManager.modelDirectory != nil
+    }
+
+    var batchProgress: Double {
+        guard batchTotal > 0 else { return 0 }
+        return Double(batchCompleted) / Double(batchTotal)
+    }
+
+    var isStreamingSelectedPage: Bool {
+        isRunning && activePageID == selectedPage?.id
+    }
+
     // MARK: - Lifecycle
 
     func start() {
@@ -204,6 +255,11 @@ final class AppState: ObservableObject {
         } catch {
             lastError = error.localizedDescription
         }
+#if DEBUG
+        if ProcessInfo.processInfo.environment["SARASHINA_DEV_PREVIEW"] == "document" {
+            resultTab = .document
+        }
+#endif
         modelManager.refresh()
         if modelManager.modelDirectory == nil {
             showSetup = true
@@ -216,9 +272,18 @@ final class AppState: ObservableObject {
                 }
             }
         }
+#if DEBUG
+        if ProcessInfo.processInfo.environment["SARASHINA_DEV_AUTORUN"] == "batch",
+           selectedDocument != nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                self.runAllPages()
+            }
+        }
+#endif
     }
 
     func shutdown() {
+        runTask?.cancel()
         tickTask?.cancel()
         idleTask?.cancel()
         engine.stop()
@@ -296,12 +361,16 @@ final class AppState: ObservableObject {
                     self.lastError = errors.joined(separator: "\n")
                 }
 #if DEBUG
-                if ProcessInfo.processInfo.environment["SARASHINA_DEV_AUTORUN"] == "1",
-                   let first = imported.first {
+                let autorun = ProcessInfo.processInfo.environment["SARASHINA_DEV_AUTORUN"]
+                if (autorun == "1" || autorun == "batch"), let first = imported.first {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
                         self.selectedDocumentID = first.id
                         self.selectedPageIndex = 0
-                        self.runOCR()
+                        if autorun == "batch" {
+                            self.runAllPages()
+                        } else {
+                            self.runOCR()
+                        }
                     }
                 }
 #endif
@@ -590,29 +659,72 @@ final class AppState: ObservableObject {
             showSetup = true
             return
         }
-        tokenBuffer = ""
-        streamingMarkdown = ""
-        lastFlush = .distantPast
+        startRun(documentID: document.id, pageIDs: [page.id], batch: false)
+    }
+
+    /// Scans every page that does not have a result yet, in page order.
+    func runAllPages() {
+        guard !isRunning, let document = selectedDocument else { return }
+        let pages = Self.pagesForBatch(in: document)
+        guard !pages.isEmpty else {
+            statusMessage = "未処理のページはありません"
+            return
+        }
+        guard modelManager.modelDirectory != nil else {
+            showSetup = true
+            return
+        }
+        startRun(documentID: document.id, pageIDs: pages.map(\.id), batch: true)
+    }
+
+    private func startRun(documentID: String, pageIDs: [String], batch: Bool) {
+        guard !isRunning, !pageIDs.isEmpty else { return }
+        cancelRequested = false
         isRunning = true
-        resultTab = .preview
+        isBatchRunning = batch
+        batchCurrent = 0
+        batchTotal = batch ? pageIDs.count : 0
+        batchCompleted = 0
+        currentRequestID = nil
+        activePageID = nil
         statusTokens = 0
         statusTokPerSec = 0
         statusElapsed = 0
-        stageText = "前処理"
-        statusMessage = "OCR を開始しています…"
-        startedAt = Date()
-        startTicker()
+        resultTab = .preview
+        statusMessage = batch ? "連続スキャンを開始しています…" : "OCR を開始しています…"
 
-        let requestID = engine.makeRequestID()
-        currentRequestID = requestID
-        let figuresDirectory = AppPaths.documentDirectory(id: document.id)
-            .appendingPathComponent("assets/p\(String(format: "%03d", page.index + 1))", isDirectory: true)
-        let assetPrefix = "assets/p\(String(format: "%03d", page.index + 1))"
+        runTask?.cancel()
+        runTask = Task { [weak self] in
+            await self?.processQueue(documentID: documentID, pageIDs: pageIDs, batch: batch)
+        }
+    }
 
-        Task {
+    private func processQueue(documentID: String, pageIDs: [String], batch: Bool) async {
+        var failures = 0
+        for (offset, pageID) in pageIDs.enumerated() {
+            if Task.isCancelled || cancelRequested { break }
+            guard let document = documents.first(where: { $0.id == documentID }),
+                  let page = document.pages.first(where: { $0.id == pageID })
+            else { continue }
+
+            selectedPageIndex = page.index
+            activePageID = page.id
+            batchCurrent = offset + 1
+            preparePageRun(batch: batch)
+
+            let requestID = engine.makeRequestID()
+            currentRequestID = requestID
+            let figuresDirectory = AppPaths.documentDirectory(id: document.id)
+                .appendingPathComponent(
+                    "assets/p\(String(format: "%03d", page.index + 1))",
+                    isDirectory: true
+                )
+            let assetPrefix = "assets/p\(String(format: "%03d", page.index + 1))"
+
             do {
                 try await ensureEngineReady()
-                try await executeOCR(
+                if Task.isCancelled || cancelRequested { break }
+                let result = try await executeOCR(
                     requestID: requestID,
                     document: document,
                     page: page,
@@ -620,13 +732,64 @@ final class AppState: ObservableObject {
                     assetPrefix: assetPrefix,
                     didRetryMemory: false
                 )
-            } catch {
-                await MainActor.run {
-                    self.finishRun()
-                    self.handleOCR(error: error, document: document, page: page)
+                if let result {
+                    batchCompleted += 1
+                    if result.cancelled { cancelRequested = true }
                 }
+            } catch {
+                if Task.isCancelled || cancelRequested { break }
+                handleOCR(error: error, document: document, page: page)
+                failures += 1
+                if !batch || failures >= 2 { break }
+                if case .failed = engine.state { break }
+            }
+
+            resetPageRun()
+            if cancelRequested { break }
+        }
+
+        if batch {
+            let completed = batchCompleted
+            let total = batchTotal
+            if cancelRequested {
+                statusMessage = "連続スキャンを停止しました（\(completed)/\(total) ページ完了）"
+            } else if completed == total {
+                statusMessage = "全ページのスキャンが完了しました（\(completed) ページ）"
+            } else {
+                statusMessage = "連続スキャンを終了しました（\(completed)/\(total) ページ完了）"
+            }
+            if !cancelRequested, completed > 0 {
+                resultTab = .document
             }
         }
+        finishRun()
+        isBatchRunning = false
+        activePageID = nil
+        runTask = nil
+    }
+
+    private func preparePageRun(batch: Bool) {
+        tokenBuffer = ""
+        streamingMarkdown = ""
+        lastFlush = .distantPast
+        statusTokens = 0
+        statusTokPerSec = 0
+        statusElapsed = 0
+        stageText = "前処理"
+        startedAt = Date()
+        statusMessage = batch
+            ? "連続スキャン \(batchCurrent)/\(batchTotal)"
+            : "OCR を開始しています…"
+        startTicker()
+    }
+
+    private func resetPageRun() {
+        currentRequestID = nil
+        tickTask?.cancel()
+        tickTask = nil
+        stageText = ""
+        streamingMarkdown = ""
+        tokenBuffer = ""
     }
 
     private func executeOCR(
@@ -636,7 +799,7 @@ final class AppState: ObservableObject {
         figuresDirectory: URL,
         assetPrefix: String,
         didRetryMemory: Bool
-    ) async throws {
+    ) async throws -> EngineOCRResult? {
         if currentRequestID != requestID {
             currentRequestID = requestID
         }
@@ -664,7 +827,7 @@ final class AppState: ObservableObject {
                 preset = .standard
                 statusMessage = "メモリ不足のため標準プリセットで再試行します"
                 try await ensureEngineReady()
-                try await executeOCR(
+                return try await executeOCR(
                     requestID: engine.makeRequestID(),
                     document: document,
                     page: page,
@@ -672,7 +835,6 @@ final class AppState: ObservableObject {
                     assetPrefix: assetPrefix,
                     didRetryMemory: true
                 )
-                return
             }
             throw error
         }
@@ -680,7 +842,7 @@ final class AppState: ObservableObject {
         let result = try data.decode(EngineOCRResult.self)
         guard var document = documents.first(where: { $0.id == document.id }),
               page.index < document.pages.count
-        else { return }
+        else { return nil }
 
         let stored = StoredResult(
             id: UUID().uuidString.lowercased(),
@@ -713,24 +875,25 @@ final class AppState: ObservableObject {
             encoding: .utf8
         )
 
-        await MainActor.run {
-            self.statusTokens = result.stats.outputTokens ?? 0
-            self.statusTokPerSec = result.stats.tokPerSec ?? 0
-            self.statusElapsed = result.stats.seconds ?? 0
-            self.statusMessage = result.cancelled ? "中断しました（部分結果を保存）" : "完了"
-            self.finishRun()
-            if let warning = result.warnings.first {
-                self.statusMessage += " ・ \(warning.message)"
-            }
-            self.scheduleIdleUnload()
+        statusTokens = result.stats.outputTokens ?? 0
+        statusTokPerSec = result.stats.tokPerSec ?? 0
+        statusElapsed = result.stats.seconds ?? 0
+        statusMessage = result.cancelled ? "中断しました（部分結果を保存）" : "完了"
+        if let warning = result.warnings.first {
+            statusMessage += " ・ \(warning.message)"
         }
+        scheduleIdleUnload()
+        return result
     }
 
     func cancelOCR() {
-        guard isRunning, let requestID = currentRequestID else { return }
-        engine.sendCancel(target: requestID)
-        stageText = "停止しています…"
-        statusMessage = "停止を要求しました"
+        guard isRunning else { return }
+        cancelRequested = true
+        if let requestID = currentRequestID {
+            engine.sendCancel(target: requestID)
+        }
+        stageText = isBatchRunning ? "連続スキャンを停止しています…" : "停止しています…"
+        statusMessage = isBatchRunning ? "連続スキャンの停止を要求しました" : "停止を要求しました"
     }
 
     private func handleOCRFrame(_ frame: EngineFrame) {
@@ -787,12 +950,8 @@ final class AppState: ObservableObject {
             streamingMarkdown = tokenBuffer
         }
         isRunning = false
-        currentRequestID = nil
-        tickTask?.cancel()
-        tickTask = nil
-        stageText = ""
-        streamingMarkdown = ""
-        tokenBuffer = ""
+        activePageID = nil
+        resetPageRun()
     }
 
     private func startTicker() {
@@ -809,17 +968,12 @@ final class AppState: ObservableObject {
     // MARK: - Export / clipboard
 
     func copyCurrentMarkdown() {
-        let markdown: String
-        if selectedResult != nil {
-            markdown = selectedResult?.markdown ?? ""
-        } else if isRunning {
-            markdown = streamingMarkdown
-        } else {
-            markdown = ""
-        }
+        let markdown = copyableMarkdown
         guard !markdown.isEmpty else { return }
         ExportService.copyMarkdownToPasteboard(markdown)
-        statusMessage = "Markdown をコピーしました"
+        statusMessage = resultTab == .document
+            ? "全ページの Markdown をコピーしました"
+            : "Markdown をコピーしました"
     }
 
     func copyAllPages() {

@@ -50,6 +50,102 @@ enum ExportService {
         return chunks.joined(separator: "\n\n---\n\n")
     }
 
+    /// Builds a single Markdown document for the whole-document preview.
+    /// Page labels always use the original PDF page number, even when only
+    /// some pages were scanned. A trailing standalone page number emitted by
+    /// OCR is removed so it does not duplicate the preview's page label.
+    static func combinedPreviewMarkdown(pages: [PageRecord]) -> String {
+        let total = pages.count
+        guard total > 0 else { return "" }
+        var chunks: [String] = []
+        var lastRenderedIndex = -1
+
+        for page in pages.sorted(by: { $0.index < $1.index }) {
+            guard let result = page.result else { continue }
+            if page.index > lastRenderedIndex + 1 {
+                chunks.append(
+                    missingMarker(
+                        from: lastRenderedIndex + 2,
+                        to: page.index,
+                        total: total
+                    )
+                )
+            }
+            let pageNumber = page.index + 1
+            let body = removingTrailingPageNumber(
+                result.markdown,
+                pageNumber: pageNumber,
+                total: total
+            )
+            chunks.append(
+                "<div class=\"page-marker\">p.\(pageNumber) / \(total)</div>\n\n\(body)"
+            )
+            lastRenderedIndex = page.index
+        }
+
+        if lastRenderedIndex >= 0, lastRenderedIndex < total - 1 {
+            chunks.append(
+                missingMarker(
+                    from: lastRenderedIndex + 2,
+                    to: total,
+                    total: total
+                )
+            )
+        }
+        return chunks.joined(separator: "\n\n")
+    }
+
+    private static func missingMarker(from start: Int, to end: Int, total: Int) -> String {
+        let pages = start == end ? "p.\(start)" : "p.\(start)–\(end)"
+        return "<div class=\"page-marker missing\">\(pages) / \(total) ・ 未処理</div>"
+    }
+
+    private static func removingTrailingPageNumber(
+        _ markdown: String,
+        pageNumber: Int,
+        total: Int
+    ) -> String {
+        var lines = markdown.components(separatedBy: .newlines)
+        var last = lines.count - 1
+        while last >= 0, lines[last].trimmingCharacters(in: .whitespaces).isEmpty {
+            last -= 1
+        }
+        guard last >= 0,
+              isPageNumberLine(lines[last], pageNumber: pageNumber, total: total)
+        else {
+            return markdown.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        lines.remove(at: last)
+        while let lastLine = lines.last,
+              lastLine.trimmingCharacters(in: .whitespaces).isEmpty {
+            lines.removeLast()
+        }
+        return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func isPageNumberLine(_ line: String, pageNumber: Int, total: Int) -> Bool {
+        let text = line.trimmingCharacters(in: .whitespaces)
+        let number = String(pageNumber)
+        let accepted = [
+            number,
+            "- \(number) -",
+            "— \(number) —",
+            "– \(number) –",
+            "－ \(number) －",
+            "－\(number)－",
+            "\(number) ページ",
+            "\(number)ページ",
+            "p.\(number)",
+            "p. \(number)",
+            "P.\(number)",
+            "\(number) / \(total)",
+            "\(number)/\(total)",
+            "Page \(number)",
+            "page \(number)"
+        ]
+        return accepted.contains(text)
+    }
+
     static func combinedText(pages: [PageRecord], includePageHeadings: Bool = true) -> String {
         var chunks: [String] = []
         for page in pages {

@@ -333,6 +333,52 @@ final class PreprocessServiceTests: XCTestCase {
         XCTAssertEqual(rotated.height, 400)
     }
 
+    func testFigureCropUsesTopLeftCoordinates() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sarashina-figure-crop-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let source = directory.appendingPathComponent("page.png")
+        try makeCornerMarkerImage(width: 400, height: 300).write(to: source)
+
+        let topLeftURL = directory.appendingPathComponent("top-left.png")
+        let topLeft = try PreprocessService.cropImage(
+            source: source,
+            destination: topLeftURL,
+            normalizedRect: CGRect(x: 0, y: 0, width: 0.25, height: 0.25)
+        )
+        XCTAssertEqual(topLeft.image.width, 100)
+        XCTAssertEqual(topLeft.image.height, 75)
+        XCTAssertEqual(topLeft.pixelRect, [0, 0, 100, 75])
+
+        let topLeftImage = try XCTUnwrap(NSImage(contentsOf: topLeftURL))
+        var topLeftRect = CGRect(origin: .zero, size: topLeftImage.size)
+        let topLeftCG = try XCTUnwrap(
+            topLeftImage.cgImage(forProposedRect: &topLeftRect, context: nil, hints: nil)
+        )
+        XCTAssertTrue(isDark(topLeftCG, x: 50, y: 37))
+
+        let bottomRightURL = directory.appendingPathComponent("bottom-right.png")
+        let bottomRight = try PreprocessService.cropImage(
+            source: source,
+            destination: bottomRightURL,
+            normalizedRect: CGRect(x: 0.75, y: 0.75, width: 0.25, height: 0.25)
+        )
+        XCTAssertEqual(bottomRight.image.width, 100)
+        XCTAssertEqual(bottomRight.image.height, 75)
+        XCTAssertEqual(bottomRight.pixelRect, [300, 225, 400, 300])
+
+        let bottomRightImage = try XCTUnwrap(NSImage(contentsOf: bottomRightURL))
+        var bottomRightRect = CGRect(origin: .zero, size: bottomRightImage.size)
+        let bottomRightCG = try XCTUnwrap(
+            bottomRightImage.cgImage(
+                forProposedRect: &bottomRightRect, context: nil, hints: nil
+            )
+        )
+        XCTAssertFalse(isDark(bottomRightCG, x: 50, y: 37))
+    }
+
     func testPDFRasterizationKeepsPageUpright() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("sarashina-pdf-\(UUID().uuidString)")
@@ -387,6 +433,28 @@ final class PreprocessServiceTests: XCTestCase {
         let offset = y * image.bytesPerRow + x * (image.bitsPerPixel / 8)
         guard offset + 2 < CFDataGetLength(data) else { return false }
         return bytes[offset] < 64 && bytes[offset + 1] < 64 && bytes[offset + 2] < 64
+    }
+
+    private func makeCornerMarkerImage(width: Int, height: Int) throws -> Data {
+        guard let context = CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            throw NSError(domain: "test", code: 1)
+        }
+        context.setFillColor(CGColor(gray: 1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        context.setFillColor(CGColor(gray: 0, alpha: 1))
+        context.fill(CGRect(x: 0, y: height - 100, width: 100, height: 100))
+        guard let image = context.makeImage() else {
+            throw NSError(domain: "test", code: 2)
+        }
+        let rep = NSBitmapImageRep(cgImage: image)
+        guard let data = rep.representation(using: .png, properties: [:]) else {
+            throw NSError(domain: "test", code: 3)
+        }
+        return data
     }
 
     private func makeImage(width: Int, height: Int) throws -> Data {

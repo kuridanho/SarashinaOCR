@@ -55,6 +55,7 @@ final class AppState: ObservableObject {
 
     // Display
     @Published var resultTab: ResultTab = .preview
+    @Published private(set) var figureCropRevision = 0
     @Published var showBBoxOverlay = true
     @Published var showOriginalImage = false
     @Published var fontSize: Double {
@@ -259,6 +260,17 @@ final class AppState: ObservableObject {
 #if DEBUG
         if ProcessInfo.processInfo.environment["SARASHINA_DEV_PREVIEW"] == "document" {
             resultTab = .document
+        }
+        if ProcessInfo.processInfo.environment["SARASHINA_DEV_FIGURE_CROP"] == "1" {
+            if let document = documents.first(where: { document in
+                document.pages.contains { !($0.result?.figures.isEmpty ?? true) }
+            }), let page = document.pages.first(where: {
+                !($0.result?.figures.isEmpty ?? true)
+            }) {
+                selectedDocumentID = document.id
+                selectedPageIndex = page.index
+                resultTab = .figures
+            }
         }
 #endif
         modelManager.refresh()
@@ -611,6 +623,96 @@ final class AppState: ObservableObject {
                     self.replaceDocument(current)
                     try? self.store?.save(current)
                     self.statusMessage = "切り取り範囲を更新しました（OCR は再実行してください）"
+                }
+            } catch {
+                await MainActor.run {
+                    self.lastError = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private func figureImageURL(
+        for figure: FigureInfo,
+        in document: DocumentRecord
+    ) -> URL? {
+        let documentDirectory = AppPaths.documentDirectory(id: document.id)
+        if let path = figure.path {
+            if path.hasPrefix("/") {
+                return URL(fileURLWithPath: path)
+            }
+            return documentDirectory.appendingPathComponent(path)
+        }
+        if let absolute = figure.absolutePath {
+            return URL(fileURLWithPath: absolute)
+        }
+        return nil
+    }
+
+    /// Re-crops one figure from the current page image without re-running OCR.
+    func applyFigureCrop(figureIndex: Int, bbox: [Double]) {
+        guard !isRunning,
+              let document = selectedDocument,
+              let page = selectedPage,
+              let processedPath = page.processedPath,
+              let result = page.result,
+              let figure = result.figures.first(where: { $0.index == figureIndex }),
+              bbox.count == 4
+        else { return }
+
+        let x1 = min(max(bbox[0], 0), 1000)
+        let y1 = min(max(bbox[1], 0), 1000)
+        let x2 = min(max(bbox[2], 0), 1000)
+        let y2 = min(max(bbox[3], 0), 1000)
+        guard x2 > x1, y2 > y1 else { return }
+        let normalized = CGRect(
+            x: x1 / 1000,
+            y: y1 / 1000,
+            width: (x2 - x1) / 1000,
+            height: (y2 - y1) / 1000
+        )
+        guard let destination = figureImageURL(for: figure, in: document) else {
+            lastError = "図の保存先が見つかりません"
+            return
+        }
+        guard beginPageEdit() else { return }
+
+        let documentID = document.id
+        let pageID = page.id
+        let source = URL(fileURLWithPath: processedPath)
+        Task {
+            defer { pageEditInProgress = false }
+            do {
+                let crop = try await Task.detached(priority: .userInitiated) {
+                    try PreprocessService.cropImage(
+                        source: source,
+                        destination: destination,
+                        normalizedRect: normalized
+                    )
+                }.value
+                await MainActor.run {
+                    guard var current = self.documents.first(where: { $0.id == documentID }),
+                          let pageIndex = current.pages.firstIndex(where: { $0.id == pageID }),
+                          var result = current.pages[pageIndex].result,
+                          let index = result.figures.firstIndex(where: { $0.index == figureIndex })
+                    else { return }
+                    result.figures[index].bbox = [
+                        Double(normalized.minX) * 1000,
+                        Double(normalized.minY) * 1000,
+                        Double(normalized.maxX) * 1000,
+                        Double(normalized.maxY) * 1000
+                    ]
+                    result.figures[index].bboxPx = crop.pixelRect
+                    current.pages[pageIndex].result = result
+                    current.updatedAt = Date().timeIntervalSince1970
+                    self.replaceDocument(current)
+                    self.figureCropRevision += 1
+                    do {
+                        try self.store?.save(current)
+                        self.statusMessage = "図\(figureIndex)の切り取り範囲を更新しました"
+                    } catch {
+                        self.lastError = error.localizedDescription
+                    }
                 }
             } catch {
                 await MainActor.run {

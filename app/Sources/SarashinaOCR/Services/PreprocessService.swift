@@ -265,6 +265,70 @@ enum PreprocessService {
         return [rotated(quad[3]), rotated(quad[0]), rotated(quad[1]), rotated(quad[2])]
     }
 
+    struct CropResult {
+        var image: PageImage
+        var pixelRect: [Int]
+    }
+
+    /// Crops a rectangle from a page image. The rectangle uses top-left
+    /// normalized coordinates, matching the figure bbox convention.
+    static func cropImage(
+        source: URL,
+        destination: URL,
+        normalizedRect: CGRect
+    ) throws -> CropResult {
+        guard let image = CIImage(
+            contentsOf: source,
+            options: [.applyOrientationProperty: true]
+        ) else {
+            throw PreprocessError.unreadableImage(source.lastPathComponent)
+        }
+        let extent = image.extent.integral
+        let width = Int(extent.width)
+        let height = Int(extent.height)
+        guard width > 0, height > 0 else {
+            throw PreprocessError.renderFailed("図の切り取り範囲")
+        }
+
+        let x1 = min(max(normalizedRect.minX, 0), 1)
+        let y1 = min(max(normalizedRect.minY, 0), 1)
+        let x2 = min(max(normalizedRect.maxX, 0), 1)
+        let y2 = min(max(normalizedRect.maxY, 0), 1)
+        guard x2 > x1, y2 > y1 else {
+            throw PreprocessError.renderFailed("図の切り取り範囲")
+        }
+
+        let left = max(0, min(width - 1, Int((x1 * CGFloat(width)).rounded(.down))))
+        let top = max(0, min(height - 1, Int((y1 * CGFloat(height)).rounded(.down))))
+        let right = max(left + 1, min(width, Int((x2 * CGFloat(width)).rounded(.up))))
+        let bottom = max(top + 1, min(height, Int((y2 * CGFloat(height)).rounded(.up))))
+
+        // Core Image uses a bottom-left origin; convert the top-left crop.
+        let cropRect = CGRect(
+            x: extent.minX + CGFloat(left),
+            y: extent.minY + CGFloat(height - bottom),
+            width: CGFloat(right - left),
+            height: CGFloat(bottom - top)
+        )
+        let cropped = image.cropped(to: cropRect)
+        guard let cgImage = ciContext.createCGImage(cropped, from: cropRect) else {
+            throw PreprocessError.renderFailed("図の切り取り")
+        }
+        try FileManager.default.createDirectory(
+            at: destination.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try writePNG(cgImage, to: destination)
+        return CropResult(
+            image: PageImage(
+                url: destination,
+                width: cgImage.width,
+                height: cgImage.height
+            ),
+            pixelRect: [left, top, right, bottom]
+        )
+    }
+
     // MARK: - Helpers
 
     private static func downscaleIfNeeded(_ image: CIImage) -> CIImage {

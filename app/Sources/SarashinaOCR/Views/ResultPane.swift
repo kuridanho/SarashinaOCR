@@ -288,34 +288,99 @@ private struct RawEditor: View {
 private struct FigureGallery: View {
     let figures: [FigureInfo]
     @EnvironmentObject private var app: AppState
+    @State private var editingFigure: FigureInfo?
+    @State private var didRunDevFigureCropHook = false
 
     private let columns = [GridItem(.adaptive(minimum: 180, maximum: 280), spacing: 14)]
 
     var body: some View {
-        if figures.isEmpty {
-            VStack(spacing: 10) {
-                Image(systemName: "photo.on.rectangle.angled")
-                    .font(.system(size: 30))
-                    .foregroundStyle(.secondary)
-                Text("このページに図はありません")
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
-            ScrollView {
-                LazyVGrid(columns: columns, spacing: 14) {
-                    ForEach(figures) { figure in
-                        FigureCard(figure: figure)
-                    }
+        Group {
+            if figures.isEmpty {
+                VStack(spacing: 10) {
+                    Image(systemName: "photo.on.rectangle.angled")
+                        .font(.system(size: 30))
+                        .foregroundStyle(.secondary)
+                    Text("このページに図はありません")
+                        .foregroundStyle(.secondary)
                 }
-                .padding(14)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVGrid(columns: columns, spacing: 14) {
+                        ForEach(figures) { figure in
+                            FigureCard(
+                                figure: figure,
+                                imageURL: imageURL(for: figure),
+                                revision: app.figureCropRevision,
+                                onEdit: canEdit && destinationURL(for: figure) != nil
+                                    ? { editingFigure = figure }
+                                    : nil
+                            )
+                        }
+                    }
+                    .padding(14)
+                }
             }
         }
+        .sheet(item: $editingFigure) { figure in
+            if let page = app.selectedPage {
+                FigureCropSheet(page: page, figure: figure) { bbox in
+                    app.applyFigureCrop(figureIndex: figure.index, bbox: bbox)
+                }
+            }
+        }
+#if DEBUG
+        .onAppear {
+            guard !didRunDevFigureCropHook,
+                  ProcessInfo.processInfo.environment["SARASHINA_DEV_FIGURE_CROP"] == "1",
+                  let first = figures.first
+            else { return }
+            didRunDevFigureCropHook = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                editingFigure = first
+            }
+        }
+#endif
     }
+
+    private var canEdit: Bool {
+        !app.isRunning && app.selectedPage?.processedPath != nil
+    }
+
+    private func destinationURL(for figure: FigureInfo) -> URL? {
+        guard let document = app.selectedDocument else { return nil }
+        if let path = figure.path {
+            if path.hasPrefix("/") {
+                return URL(fileURLWithPath: path)
+            }
+            return AppPaths.documentDirectory(id: document.id)
+                .appendingPathComponent(path)
+        }
+        if let absolute = figure.absolutePath {
+            return URL(fileURLWithPath: absolute)
+        }
+        return nil
+    }
+
+    private func imageURL(for figure: FigureInfo) -> URL? {
+        guard let url = destinationURL(for: figure),
+              FileManager.default.fileExists(atPath: url.path)
+        else { return nil }
+        return url
+    }
+}
+
+private struct FigureCardLoadID: Hashable {
+    let url: URL?
+    let figure: FigureInfo
+    let revision: Int
 }
 
 private struct FigureCard: View {
     let figure: FigureInfo
+    let imageURL: URL?
+    let revision: Int
+    let onEdit: (() -> Void)?
     @State private var image: NSImage?
 
     var body: some View {
@@ -340,9 +405,16 @@ private struct FigureCard: View {
                 Text("図\(figure.index)")
                     .font(.caption.bold())
                 Spacer()
-                if let path = figure.absolutePath ?? figure.path {
+                if let onEdit {
+                    Button(action: onEdit) {
+                        Image(systemName: "crop")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("図の切り取り範囲を修正")
+                }
+                if let imageURL {
                     Button {
-                        saveFigure(path: path)
+                        saveFigure(url: imageURL)
                     } label: {
                         Image(systemName: "square.and.arrow.down")
                     }
@@ -352,26 +424,27 @@ private struct FigureCard: View {
             }
             .font(.caption)
         }
-        .task(id: figure.absolutePath) {
-            guard let path = figure.absolutePath else { return }
-            image = NSImage(contentsOfFile: path)
+        .task(id: FigureCardLoadID(url: imageURL, figure: figure, revision: revision)) {
+            guard let imageURL else {
+                image = nil
+                return
+            }
+            image = NSImage(contentsOf: imageURL)
         }
     }
 
-    private func saveFigure(path: String) {
-        guard FileManager.default.fileExists(atPath: path) else { return }
+    private func saveFigure(url: URL) {
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
         let panel = NSSavePanel()
         panel.canCreateDirectories = true
-        panel.nameFieldStringValue = URL(fileURLWithPath: path).lastPathComponent
+        panel.nameFieldStringValue = url.lastPathComponent
         panel.title = "図を保存"
         if panel.runModal() == .OK, let destination = panel.url {
             do {
                 if FileManager.default.fileExists(atPath: destination.path) {
                     try FileManager.default.removeItem(at: destination)
                 }
-                try FileManager.default.copyItem(
-                    at: URL(fileURLWithPath: path), to: destination
-                )
+                try FileManager.default.copyItem(at: url, to: destination)
             } catch {
                 presentError(error)
             }

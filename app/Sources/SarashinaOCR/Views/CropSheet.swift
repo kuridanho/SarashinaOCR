@@ -4,34 +4,46 @@ import SwiftUI
 /// Manual four-corner adjustment for document perspective correction (FR-04).
 struct CropSheet: View {
     let page: PageRecord
+    let initialQuad: [CGPoint]?
+    let loadSource: () async throws -> URL
     let onApply: ([CGPoint]) -> Void
+    let onReset: () -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var points: [CGPoint] = []
     @State private var image: NSImage?
+    @State private var sourceURL: URL?
+    @State private var isLoading = true
     @State private var isDetecting = false
+    @State private var confirmReset = false
     @State private var message: String?
 
-    private let imagePath: String
-
-    init(page: PageRecord, onApply: @escaping ([CGPoint]) -> Void) {
+    init(
+        page: PageRecord,
+        initialQuad: [CGPoint]?,
+        loadSource: @escaping () async throws -> URL,
+        onApply: @escaping ([CGPoint]) -> Void,
+        onReset: @escaping () -> Void
+    ) {
         self.page = page
+        self.initialQuad = initialQuad
+        self.loadSource = loadSource
         self.onApply = onApply
-        imagePath = page.displayPath
+        self.onReset = onReset
     }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("4 隅を調整")
+                    Text("切り取り範囲を編集")
                         .font(.title3.bold())
-                    Text("書類の角をドラッグして、まっすぐに補正する範囲を指定します。")
+                    Text("元の画像から残す範囲の4隅を指定します。適用すると、このページの OCR 結果は破棄されます。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                if isDetecting {
+                if isLoading || isDetecting {
                     ProgressView().controlSize(.small)
                 }
             }
@@ -123,11 +135,17 @@ struct CropSheet: View {
 
             HStack(spacing: 10) {
                 Button("自動検出") { detect() }
-                    .disabled(isDetecting)
+                    .disabled(isLoading || isDetecting || sourceURL == nil)
+                Button("全体に戻す") {
+                    confirmReset = true
+                }
+                .disabled(isLoading)
+                .help("現在の切り取りを解除して、元の全体画像に戻します")
                 Button("全画面") {
                     points = Self.fullQuad
                     message = nil
                 }
+                .disabled(isLoading)
                 if let message {
                     Text(message)
                         .font(.caption)
@@ -148,14 +166,23 @@ struct CropSheet: View {
             .padding(14)
         }
         .frame(width: 760, height: 720)
-        .task {
-            image = NSImage(contentsOfFile: imagePath)
-            await detectInitialQuad()
+        .task { await load() }
+        .confirmationDialog(
+            "切り取りを全体に戻しますか？",
+            isPresented: $confirmReset
+        ) {
+            Button("全体に戻す", role: .destructive) {
+                onReset()
+                dismiss()
+            }
+            Button("キャンセル", role: .cancel) {}
+        } message: {
+            Text("このページの OCR 結果と図は破棄されます。")
         }
     }
 
     private var isValid: Bool {
-        guard points.count == 4 else { return false }
+        guard image != nil, !isLoading, points.count == 4 else { return false }
         var area: CGFloat = 0
         for index in 0..<4 {
             let a = points[index]
@@ -165,14 +192,36 @@ struct CropSheet: View {
         return abs(area) / 2 > 0.02
     }
 
+    private func load() async {
+        isLoading = true
+        defer { isLoading = false }
+        do {
+            let url = try await loadSource()
+            sourceURL = url
+            guard let loaded = NSImage(contentsOf: url) else {
+                points = Self.fullQuad
+                message = "元画像を読み込めませんでした。"
+                return
+            }
+            image = loaded
+            if let initialQuad, initialQuad.count == 4 {
+                points = initialQuad
+            } else {
+                points = Self.fullQuad
+            }
+        } catch {
+            points = Self.fullQuad
+            message = error.localizedDescription
+        }
+    }
+
     private func detect() {
-        guard !isDetecting else { return }
+        guard !isDetecting, let sourceURL else { return }
         isDetecting = true
         message = nil
         Task {
-            let url = URL(fileURLWithPath: imagePath)
             let quad = await Task.detached(priority: .userInitiated) {
-                PreprocessService.documentQuad(in: url)
+                PreprocessService.documentQuad(in: sourceURL)
             }.value
             await MainActor.run {
                 isDetecting = false
@@ -182,18 +231,6 @@ struct CropSheet: View {
                     message = "輪郭を検出できませんでした。手動で調整してください。"
                 }
             }
-        }
-    }
-
-    private func detectInitialQuad() async {
-        let url = URL(fileURLWithPath: imagePath)
-        let quad = await Task.detached(priority: .userInitiated) {
-            PreprocessService.documentQuad(in: url)
-        }.value
-        if let quad {
-            points = quad
-        } else {
-            points = Self.fullQuad
         }
     }
 

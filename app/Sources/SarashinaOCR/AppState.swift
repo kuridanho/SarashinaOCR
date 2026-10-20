@@ -96,6 +96,7 @@ final class AppState: ObservableObject {
     private var idleTask: Task<Void, Never>?
     private var loadTask: Task<Void, Error>?
     private var didStart = false
+    private var pageEditInProgress = false
     private var cancellables: Set<AnyCancellable> = []
 
     init() {
@@ -471,47 +472,191 @@ final class AppState: ObservableObject {
         try? FileManager.default.removeItem(at: assets)
     }
 
+    private func beginPageEdit() -> Bool {
+        guard !pageEditInProgress else { return false }
+        pageEditInProgress = true
+        return true
+    }
+
+    private func cropBaseURL(for page: PageRecord, in document: DocumentRecord) -> URL {
+        AppPaths.documentDirectory(id: document.id)
+            .appendingPathComponent(String(format: "page-%03d-base.png", page.index + 1))
+    }
+
+    /// Returns the uncropped page image. It is created on demand so old
+    /// documents can also widen a crop that was applied before this feature.
+    func cropSource(for page: PageRecord, in document: DocumentRecord) async throws -> URL {
+        if let path = page.cropBasePath,
+           FileManager.default.fileExists(atPath: path) {
+            return URL(fileURLWithPath: path)
+        }
+
+        let baseURL = cropBaseURL(for: page, in: document)
+        if !FileManager.default.fileExists(atPath: baseURL.path) {
+            let source = URL(fileURLWithPath: document.sourcePath)
+            let kind = document.kind
+            let pageIndex = page.index
+            try await Task.detached(priority: .userInitiated) {
+                if kind == "pdf" {
+                    _ = try PreprocessService.rasterizePDFPage(
+                        source: source, index: pageIndex, destination: baseURL
+                    )
+                } else {
+                    _ = try PreprocessService.prepareImage(
+                        source: source,
+                        destination: baseURL,
+                        applyDocumentDetection: false
+                    )
+                }
+            }.value
+        }
+
+        if var current = documents.first(where: { $0.id == document.id }),
+           let index = current.pages.firstIndex(where: { $0.id == page.id }) {
+            current.pages[index].cropBasePath = baseURL.path
+            current.updatedAt = Date().timeIntervalSince1970
+            replaceDocument(current)
+            try? store?.save(current)
+        }
+        return baseURL
+    }
+
     func rotateCurrentPage() {
-        guard var document = selectedDocument, let page = selectedPage,
-              !isRunning
+        guard !isRunning, let document = selectedDocument, let page = selectedPage,
+              let processedPath = page.processedPath
         else { return }
-        do {
-            let updated = try ImportService.rasterizePage(document: document, page: page, quarterTurns: 1)
-            clearPageOutputs(for: page)
-            document.pages[selectedPageIndex] = updated
-            document.updatedAt = Date().timeIntervalSince1970
-            replaceDocument(document)
-            try store?.save(document)
-            statusMessage = "ページを回転しました"
-        } catch {
-            lastError = error.localizedDescription
+        guard beginPageEdit() else { return }
+        let documentID = document.id
+        let pageID = page.id
+        let destination = URL(fileURLWithPath: processedPath)
+
+        Task {
+            defer { pageEditInProgress = false }
+            do {
+                let baseURL = try await cropSource(for: page, in: document)
+                let image = try await Task.detached(priority: .userInitiated) {
+                    let rotated = try PreprocessService.rotate(
+                        imageAt: destination, quarterTurns: 1, destination: destination
+                    )
+                    _ = try PreprocessService.rotate(
+                        imageAt: baseURL, quarterTurns: 1, destination: baseURL
+                    )
+                    return rotated
+                }.value
+                await MainActor.run {
+                    guard var current = self.documents.first(where: { $0.id == documentID }),
+                          let index = current.pages.firstIndex(where: { $0.id == pageID })
+                    else { return }
+                    let old = current.pages[index]
+                    self.clearPageOutputs(for: old)
+                    var updated = old
+                    updated.width = image.width
+                    updated.height = image.height
+                    updated.cropBasePath = baseURL.path
+                    updated.cropQuad = old.cropQuad.map {
+                        PreprocessService.rotateQuadClockwise($0)
+                    }
+                    updated.result = nil
+                    updated.ocrState = .pending
+                    current.pages[index] = updated
+                    current.updatedAt = Date().timeIntervalSince1970
+                    self.replaceDocument(current)
+                    try? self.store?.save(current)
+                    self.statusMessage = "ページを回転しました（OCR は再実行してください）"
+                }
+            } catch {
+                await MainActor.run {
+                    self.lastError = error.localizedDescription
+                }
+            }
         }
     }
 
     func applyPerspective(quad: [CGPoint]) {
-        guard !isRunning, var document = selectedDocument, let page = selectedPage,
+        guard !isRunning, let document = selectedDocument, let page = selectedPage,
               let processedPath = page.processedPath
         else { return }
-        let url = URL(fileURLWithPath: processedPath)
+        if Self.quadsEqual(page.cropQuad, quad) {
+            statusMessage = "切り取り範囲は変更されていません"
+            return
+        }
+        guard beginPageEdit() else { return }
+        let documentID = document.id
+        let pageID = page.id
+        let destination = URL(fileURLWithPath: processedPath)
+
         Task {
+            defer { pageEditInProgress = false }
             do {
+                let baseURL = try await cropSource(for: page, in: document)
                 let image = try await Task.detached(priority: .userInitiated) {
                     try PreprocessService.correctPerspective(
-                        source: url, destination: url, quad: quad
+                        source: baseURL, destination: destination, quad: quad
                     )
                 }.value
                 await MainActor.run {
-                    var updated = page
+                    guard var current = self.documents.first(where: { $0.id == documentID }),
+                          let index = current.pages.firstIndex(where: { $0.id == pageID })
+                    else { return }
+                    let old = current.pages[index]
+                    self.clearPageOutputs(for: old)
+                    var updated = old
                     updated.width = image.width
                     updated.height = image.height
+                    updated.cropQuad = quad
                     updated.result = nil
                     updated.ocrState = .pending
-                    self.clearPageOutputs(for: page)
-                    document.pages[self.selectedPageIndex] = updated
-                    document.updatedAt = Date().timeIntervalSince1970
-                    self.replaceDocument(document)
-                    try? self.store?.save(document)
-                    self.statusMessage = "台形補正を適用しました"
+                    current.pages[index] = updated
+                    current.updatedAt = Date().timeIntervalSince1970
+                    self.replaceDocument(current)
+                    try? self.store?.save(current)
+                    self.statusMessage = "切り取り範囲を更新しました（OCR は再実行してください）"
+                }
+            } catch {
+                await MainActor.run {
+                    self.lastError = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    func resetCrop() {
+        guard !isRunning, let document = selectedDocument, let page = selectedPage,
+              let processedPath = page.processedPath
+        else { return }
+        guard beginPageEdit() else { return }
+        let documentID = document.id
+        let pageID = page.id
+        let destination = URL(fileURLWithPath: processedPath)
+
+        Task {
+            defer { pageEditInProgress = false }
+            do {
+                let baseURL = try await cropSource(for: page, in: document)
+                let image = try await Task.detached(priority: .userInitiated) {
+                    try PreprocessService.prepareImage(
+                        source: baseURL,
+                        destination: destination,
+                        applyDocumentDetection: false
+                    )
+                }.value
+                await MainActor.run {
+                    guard var current = self.documents.first(where: { $0.id == documentID }),
+                          let index = current.pages.firstIndex(where: { $0.id == pageID })
+                    else { return }
+                    let old = current.pages[index]
+                    self.clearPageOutputs(for: old)
+                    var updated = old
+                    updated.width = image.width
+                    updated.height = image.height
+                    updated.cropQuad = nil
+                    updated.result = nil
+                    updated.ocrState = .pending
+                    current.pages[index] = updated
+                    current.updatedAt = Date().timeIntervalSince1970
+                    self.replaceDocument(current)
+                    try? self.store?.save(current)
+                    self.statusMessage = "切り取りを全体に戻しました（OCR は再実行してください）"
                 }
             } catch {
                 await MainActor.run {
@@ -522,36 +667,62 @@ final class AppState: ObservableObject {
     }
 
     func redoDocumentDetection() {
-        guard var document = selectedDocument, let page = selectedPage,
-              !isRunning, document.kind == "image", page.processedPath != nil
+        guard !isRunning, let document = selectedDocument, let page = selectedPage,
+              document.kind == "image", let processedPath = page.processedPath
         else { return }
-        let source = URL(fileURLWithPath: document.sourcePath)
-        let destination = URL(fileURLWithPath: page.processedPath!)
+        guard beginPageEdit() else { return }
+        let documentID = document.id
+        let pageID = page.id
+        let destination = URL(fileURLWithPath: processedPath)
+
         Task {
+            defer { pageEditInProgress = false }
             do {
-                let image = try await Task.detached {
-                    try PreprocessService.prepareImage(
-                        source: source,
+                let baseURL = try await cropSource(for: page, in: document)
+                let result = try await Task.detached(priority: .userInitiated) {
+                    () -> (PreprocessService.PageImage, [CGPoint]?) in
+                    if let quad = PreprocessService.documentQuad(in: baseURL) {
+                        let image = try PreprocessService.correctPerspective(
+                            source: baseURL, destination: destination, quad: quad
+                        )
+                        return (image, quad)
+                    }
+                    let image = try PreprocessService.prepareImage(
+                        source: baseURL,
                         destination: destination,
-                        applyDocumentDetection: true
+                        applyDocumentDetection: false
                     )
+                    return (image, Optional<[CGPoint]>.none)
                 }.value
                 await MainActor.run {
-                    var updated = page
-                    updated.width = image.width
-                    updated.height = image.height
+                    guard var current = self.documents.first(where: { $0.id == documentID }),
+                          let index = current.pages.firstIndex(where: { $0.id == pageID })
+                    else { return }
+                    let old = current.pages[index]
+                    self.clearPageOutputs(for: old)
+                    var updated = old
+                    updated.width = result.0.width
+                    updated.height = result.0.height
+                    updated.cropQuad = result.1
                     updated.result = nil
                     updated.ocrState = .pending
-                    self.clearPageOutputs(for: page)
-                    document.pages[self.selectedPageIndex] = updated
-                    document.updatedAt = Date().timeIntervalSince1970
-                    self.replaceDocument(document)
-                    try? self.store?.save(document)
-                    self.statusMessage = "書類検出を再実行しました"
+                    current.pages[index] = updated
+                    current.updatedAt = Date().timeIntervalSince1970
+                    self.replaceDocument(current)
+                    try? self.store?.save(current)
+                    self.statusMessage = "書類検出を再実行しました（OCR は再実行してください）"
                 }
             } catch {
                 await MainActor.run { self.lastError = error.localizedDescription }
             }
+        }
+    }
+
+    private static func quadsEqual(_ lhs: [CGPoint]?, _ rhs: [CGPoint]) -> Bool {
+        guard let lhs, lhs.count == rhs.count else { return false }
+        let tolerance: CGFloat = 0.0005
+        return zip(lhs, rhs).allSatisfy {
+            abs($0.x - $1.x) <= tolerance && abs($0.y - $1.y) <= tolerance
         }
     }
 

@@ -6,9 +6,9 @@ __pycache__/
 *.egg-info/
 
 # Models and scratch output
-models/
-out/
-data/
+/models/
+/out/
+/data/
 *.log
 
 # macOS

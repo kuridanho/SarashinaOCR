@@ -160,6 +160,22 @@ enum PreprocessService {
         PDFDocument(url: url)?.pageCount ?? 0
     }
 
+    /// Rasterizes one PDF page without cropping, for re-editing a crop later.
+    static func rasterizePDFPage(
+        source: URL,
+        index: Int,
+        destination: URL
+    ) throws -> PageImage {
+        guard let document = PDFDocument(url: source),
+              let page = document.page(at: index)
+        else {
+            throw PreprocessError.unreadablePDF(source.lastPathComponent)
+        }
+        let image = try render(page: page)
+        try writePNG(image, to: destination)
+        return PageImage(url: destination, width: image.width, height: image.height)
+    }
+
     /// Rasterizes every page at 200dpi into `page-001.png`, `page-002.png`, ...
     static func rasterizePDF(source: URL, into directory: URL) throws -> [PageImage] {
         guard let document = PDFDocument(url: source) else {
@@ -238,6 +254,15 @@ enum PreprocessService {
         }
         try writePNG(cgImage, to: destination)
         return PageImage(url: destination, width: cgImage.width, height: cgImage.height)
+    }
+
+    /// Rotates a top-left origin quad 90 degrees clockwise.
+    static func rotateQuadClockwise(_ quad: [CGPoint]) -> [CGPoint] {
+        guard quad.count == 4 else { return quad }
+        func rotated(_ point: CGPoint) -> CGPoint {
+            CGPoint(x: 1 - point.y, y: point.x)
+        }
+        return [rotated(quad[3]), rotated(quad[0]), rotated(quad[1]), rotated(quad[2])]
     }
 
     // MARK: - Helpers

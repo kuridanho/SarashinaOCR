@@ -66,20 +66,38 @@ enum ImportService {
             let sourceCopy = directory.appendingPathComponent("source.\(ext)")
             try FileManager.default.copyItem(at: url, to: sourceCopy)
             document.sourcePath = sourceCopy.path
-            let processed = directory.appendingPathComponent("page-001.png")
-            let page = try PreprocessService.prepareImage(
+            // Keep an uncropped base so the crop can be widened or redone later.
+            let base = directory.appendingPathComponent("page-001-base.png")
+            let baseImage = try PreprocessService.prepareImage(
                 source: sourceCopy,
-                destination: processed,
-                applyDocumentDetection: options.applyDocumentDetection
+                destination: base,
+                applyDocumentDetection: false
             )
+            let processed = directory.appendingPathComponent("page-001.png")
+            var pageImage = baseImage
+            var cropQuad: [CGPoint]?
+            if options.applyDocumentDetection,
+               let quad = PreprocessService.documentQuad(in: base),
+               let corrected = try? PreprocessService.correctPerspective(
+                   source: base,
+                   destination: processed,
+                   quad: quad
+               ) {
+                pageImage = corrected
+                cropQuad = quad
+            } else {
+                try FileManager.default.copyItem(at: base, to: processed)
+            }
             document.pages = [
                 PageRecord(
                     id: "\(id)-p0001",
                     index: 0,
                     imagePath: sourceCopy.path,
-                    processedPath: page.url.path,
-                    width: page.width,
-                    height: page.height,
+                    processedPath: processed.path,
+                    cropBasePath: base.path,
+                    cropQuad: cropQuad,
+                    width: pageImage.width,
+                    height: pageImage.height,
                     ocrState: .pending,
                     result: nil
                 )
@@ -105,24 +123,6 @@ enum ImportService {
         try data.write(to: url)
         defer { try? FileManager.default.removeItem(at: tempDirectory) }
         return try importFile(at: url, options: options)
-    }
-
-    static func rasterizePage(
-        document: DocumentRecord,
-        page: PageRecord,
-        quarterTurns: Int = 0
-    ) throws -> PageRecord {
-        guard let processedPath = page.processedPath else { return page }
-        var updated = page
-        let url = URL(fileURLWithPath: processedPath)
-        let pageImage = try PreprocessService.rotate(
-            imageAt: url, quarterTurns: quarterTurns, destination: url
-        )
-        updated.width = pageImage.width
-        updated.height = pageImage.height
-        updated.result = nil
-        updated.ocrState = .pending
-        return updated
     }
 
     enum ImportError: LocalizedError {

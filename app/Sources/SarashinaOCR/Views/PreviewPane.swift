@@ -4,6 +4,7 @@ import SwiftUI
 struct PreviewPane: View {
     @EnvironmentObject private var app: AppState
     @State private var showCropSheet = false
+    @State private var didRunDevCropHook = false
 
     var body: some View {
         Group {
@@ -21,12 +22,27 @@ struct PreviewPane: View {
         }
         .background(Color(nsColor: .textBackgroundColor))
         .sheet(isPresented: $showCropSheet) {
-            if let page = app.selectedPage {
-                CropSheet(page: page) { quad in
-                    app.applyPerspective(quad: quad)
-                }
+            if let document = app.selectedDocument, let page = app.selectedPage {
+                CropSheet(
+                    page: page,
+                    initialQuad: page.cropQuad,
+                    loadSource: { try await app.cropSource(for: page, in: document) },
+                    onApply: { quad in app.applyPerspective(quad: quad) },
+                    onReset: { app.resetCrop() }
+                )
             }
         }
+#if DEBUG
+        .onAppear {
+            guard !didRunDevCropHook,
+                  ProcessInfo.processInfo.environment["SARASHINA_DEV_CROP"] == "1"
+            else { return }
+            didRunDevCropHook = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                showCropSheet = true
+            }
+        }
+#endif
     }
 
     private func header(document: DocumentRecord, page: PageRecord) -> some View {
@@ -142,9 +158,9 @@ struct PreviewPane: View {
                 Button {
                     showCropSheet = true
                 } label: {
-                    Label("4隅", systemImage: "rectangle.dashed")
+                    Label("切り取り", systemImage: "rectangle.dashed")
                 }
-                .help("4隅をドラッグしてトリミング")
+                .help("切り取り範囲を後から編集（元画像から指定）")
                 .disabled(app.isRunning)
 
                 Button {

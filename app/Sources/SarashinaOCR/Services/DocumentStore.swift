@@ -60,6 +60,8 @@ final class DocumentStore {
             idx INTEGER NOT NULL,
             image_path TEXT NOT NULL,
             processed_path TEXT,
+            crop_base_path TEXT,
+            crop_json TEXT,
             width INTEGER NOT NULL DEFAULT 0,
             height INTEGER NOT NULL DEFAULT 0,
             bbox_json TEXT,
@@ -99,6 +101,23 @@ final class DocumentStore {
         """)
         try execute("CREATE INDEX IF NOT EXISTS pages_document ON pages(document_id, idx);")
         try execute("CREATE INDEX IF NOT EXISTS results_page ON results(page_id, created_at);")
+        try addColumnIfNeeded(table: "pages", column: "crop_base_path", type: "TEXT")
+        try addColumnIfNeeded(table: "pages", column: "crop_json", type: "TEXT")
+    }
+
+    /// Adds a column to an existing database without disturbing saved documents.
+    private func addColumnIfNeeded(table: String, column: String, type: String) throws {
+        let statement = try prepare("PRAGMA table_info(\(table));")
+        var exists = false
+        while sqlite3_step(statement) == SQLITE_ROW {
+            if text(statement, 1) == column {
+                exists = true
+                break
+            }
+        }
+        sqlite3_finalize(statement)
+        guard !exists else { return }
+        try execute("ALTER TABLE \(table) ADD COLUMN \(column) \(type);")
     }
 
     // MARK: - Public API
@@ -226,11 +245,12 @@ final class DocumentStore {
 
     private func upsertPage(_ page: PageRecord, documentID: String) throws {
         let statement = try prepare("""
-        INSERT INTO pages(id, document_id, idx, image_path, processed_path, width, height,
-                          ocr_state, updated_at)
-        VALUES(?,?,?,?,?,?,?,?,?)
+        INSERT INTO pages(id, document_id, idx, image_path, processed_path,
+                          crop_base_path, crop_json, width, height, ocr_state, updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(id) DO UPDATE SET
             image_path=excluded.image_path, processed_path=excluded.processed_path,
+            crop_base_path=excluded.crop_base_path, crop_json=excluded.crop_json,
             width=excluded.width, height=excluded.height, ocr_state=excluded.ocr_state,
             updated_at=excluded.updated_at;
         """)
@@ -240,10 +260,12 @@ final class DocumentStore {
         sqlite3_bind_int(statement, 3, Int32(page.index))
         bind(statement, 4, page.imagePath)
         bind(statement, 5, page.processedPath)
-        sqlite3_bind_int(statement, 6, Int32(page.width))
-        sqlite3_bind_int(statement, 7, Int32(page.height))
-        bind(statement, 8, page.ocrState.rawValue)
-        sqlite3_bind_double(statement, 9, Date().timeIntervalSince1970)
+        bind(statement, 6, page.cropBasePath)
+        bind(statement, 7, try page.cropQuad.map(encode))
+        sqlite3_bind_int(statement, 8, Int32(page.width))
+        sqlite3_bind_int(statement, 9, Int32(page.height))
+        bind(statement, 10, page.ocrState.rawValue)
+        sqlite3_bind_double(statement, 11, Date().timeIntervalSince1970)
         guard sqlite3_step(statement) == SQLITE_DONE else { throw StoreError.sqlite(lastError) }
     }
 
@@ -304,11 +326,13 @@ final class DocumentStore {
 
     private func loadPages(documentID: String) throws -> [PageRecord] {
         let statement = try prepare("""
-        SELECT id, idx, image_path, processed_path, width, height, ocr_state
+        SELECT id, idx, image_path, processed_path, crop_base_path, crop_json,
+               width, height, ocr_state
         FROM pages WHERE document_id = ? ORDER BY idx;
         """)
         defer { sqlite3_finalize(statement) }
         bind(statement, 1, documentID)
+        let decoder = JSONDecoder()
         var pages: [PageRecord] = []
         while sqlite3_step(statement) == SQLITE_ROW {
             let pageID = text(statement, 0)
@@ -318,9 +342,15 @@ final class DocumentStore {
                     index: Int(sqlite3_column_int(statement, 1)),
                     imagePath: text(statement, 2),
                     processedPath: optionalText(statement, 3),
-                    width: Int(sqlite3_column_int(statement, 4)),
-                    height: Int(sqlite3_column_int(statement, 5)),
-                    ocrState: PageOCRState(rawValue: text(statement, 6)) ?? .pending,
+                    cropBasePath: optionalText(statement, 4),
+                    cropQuad: decode(
+                        [CGPoint].self,
+                        from: optionalText(statement, 5),
+                        decoder: decoder
+                    ),
+                    width: Int(sqlite3_column_int(statement, 6)),
+                    height: Int(sqlite3_column_int(statement, 7)),
+                    ocrState: PageOCRState(rawValue: text(statement, 8)) ?? .pending,
                     result: try loadResult(pageID: pageID)
                 )
             )

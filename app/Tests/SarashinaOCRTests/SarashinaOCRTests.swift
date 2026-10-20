@@ -1,4 +1,5 @@
 import AppKit
+import SQLite3
 import XCTest
 @testable import SarashinaOCR
 
@@ -94,7 +95,15 @@ final class DocumentStoreTests: XCTestCase {
         )
         let page = PageRecord(
             id: "page-1", index: 0, imagePath: "/tmp/source.png",
-            processedPath: "/tmp/processed.png", width: 100, height: 200,
+            processedPath: "/tmp/processed.png",
+            cropBasePath: "/tmp/base.png",
+            cropQuad: [
+                CGPoint(x: 0.1, y: 0.2),
+                CGPoint(x: 0.9, y: 0.2),
+                CGPoint(x: 0.9, y: 0.8),
+                CGPoint(x: 0.1, y: 0.8)
+            ],
+            width: 100, height: 200,
             ocrState: .done, result: result
         )
         let document = DocumentRecord(
@@ -109,12 +118,57 @@ final class DocumentStoreTests: XCTestCase {
         XCTAssertEqual(loaded.first?.pages.first?.result?.stats.outputTokens, 42)
         XCTAssertEqual(loaded.first?.pages.first?.result?.figures.first?.bbox, [10, 20, 300, 400])
         XCTAssertEqual(loaded.first?.pages.first?.result?.warnings.first?.code, "W0001")
+        XCTAssertEqual(loaded.first?.pages.first?.cropBasePath, "/tmp/base.png")
+        XCTAssertEqual(loaded.first?.pages.first?.cropQuad?.count, 4)
+        XCTAssertEqual(loaded.first?.pages.first?.cropQuad?[2], CGPoint(x: 0.9, y: 0.8))
 
         try store.deleteResult(pageID: "page-1")
         XCTAssertNil(try store.loadDocuments().first?.pages.first?.result)
 
         try store.delete(documentID: "doc-1")
         XCTAssertTrue(try store.loadDocuments().isEmpty)
+    }
+
+    func testMigratesLegacyPagesTableForCropEditing() throws {
+        var legacyDB: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(databaseURL.path, &legacyDB), SQLITE_OK)
+        let schema = """
+        CREATE TABLE documents(
+            id TEXT PRIMARY KEY, title TEXT NOT NULL, kind TEXT NOT NULL,
+            source_path TEXT NOT NULL, page_count INTEGER NOT NULL DEFAULT 0,
+            created_at REAL NOT NULL, updated_at REAL NOT NULL
+        );
+        CREATE TABLE pages(
+            id TEXT PRIMARY KEY, document_id TEXT NOT NULL, idx INTEGER NOT NULL,
+            image_path TEXT NOT NULL, processed_path TEXT,
+            width INTEGER NOT NULL DEFAULT 0, height INTEGER NOT NULL DEFAULT 0,
+            bbox_json TEXT, ocr_state TEXT NOT NULL DEFAULT 'pending',
+            updated_at REAL NOT NULL, UNIQUE(document_id, idx)
+        );
+        INSERT INTO documents VALUES('doc', '旧文書', 'pdf', '/tmp/source.pdf', 1, 1, 1);
+        INSERT INTO pages VALUES('page', 'doc', 0, '/tmp/source.pdf', '/tmp/page.png',
+                                 100, 200, NULL, 'pending', 1);
+        """
+        XCTAssertEqual(sqlite3_exec(legacyDB, schema, nil, nil, nil), SQLITE_OK)
+        sqlite3_close(legacyDB)
+        legacyDB = nil
+
+        let store = try DocumentStore(url: databaseURL)
+        var document = try XCTUnwrap(try store.loadDocuments().first)
+        XCTAssertNil(document.pages.first?.cropBasePath)
+        XCTAssertNil(document.pages.first?.cropQuad)
+
+        document.pages[0].cropBasePath = "/tmp/base.png"
+        document.pages[0].cropQuad = [
+            CGPoint(x: 0, y: 0),
+            CGPoint(x: 1, y: 0),
+            CGPoint(x: 1, y: 1),
+            CGPoint(x: 0, y: 1)
+        ]
+        try store.save(document)
+        let reloaded = try XCTUnwrap(try store.loadDocuments().first)
+        XCTAssertEqual(reloaded.pages.first?.cropBasePath, "/tmp/base.png")
+        XCTAssertEqual(reloaded.pages.first?.cropQuad?.count, 4)
     }
 }
 
@@ -235,6 +289,35 @@ final class PreprocessServiceTests: XCTestCase {
         XCTAssertGreaterThan(output.height, 100)
     }
 
+    func testCropQuadRotationKeepsCornerOrder() {
+        let quad = [
+            CGPoint(x: 0.1, y: 0.2),
+            CGPoint(x: 0.8, y: 0.2),
+            CGPoint(x: 0.8, y: 0.9),
+            CGPoint(x: 0.1, y: 0.9)
+        ]
+        var rotated = quad
+        for _ in 0..<4 {
+            rotated = PreprocessService.rotateQuadClockwise(rotated)
+        }
+        for (actual, expected) in zip(rotated, quad) {
+            XCTAssertEqual(actual.x, expected.x, accuracy: 0.000_001)
+            XCTAssertEqual(actual.y, expected.y, accuracy: 0.000_001)
+        }
+
+        let once = PreprocessService.rotateQuadClockwise(quad)
+        let expected = [
+            CGPoint(x: 0.1, y: 0.1),
+            CGPoint(x: 0.8, y: 0.1),
+            CGPoint(x: 0.8, y: 0.8),
+            CGPoint(x: 0.1, y: 0.8)
+        ]
+        for (actual, point) in zip(once, expected) {
+            XCTAssertEqual(actual.x, point.x, accuracy: 0.000_001)
+            XCTAssertEqual(actual.y, point.y, accuracy: 0.000_001)
+        }
+    }
+
     func testRotationSwapsDimensions() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("sarashina-rotate-\(UUID().uuidString)")
@@ -260,6 +343,13 @@ final class PreprocessServiceTests: XCTestCase {
         try makeMarkerPDF(at: pdfURL)
         let pages = try PreprocessService.rasterizePDF(source: pdfURL, into: directory)
         XCTAssertEqual(pages.count, 1)
+
+        let singleURL = directory.appendingPathComponent("single-page.png")
+        let single = try PreprocessService.rasterizePDFPage(
+            source: pdfURL, index: 0, destination: singleURL
+        )
+        XCTAssertEqual(single.width, pages[0].width)
+        XCTAssertEqual(single.height, pages[0].height)
 
         let image = try XCTUnwrap(NSImage(contentsOf: pages[0].url))
         var rect = CGRect(origin: .zero, size: image.size)

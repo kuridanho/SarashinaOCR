@@ -331,13 +331,13 @@ struct FigureCropSheet: View {
     private func zoomToSelection() {
         guard canvasSize.width > 1, canvasSize.height > 1 else { return }
         let baseRect = currentBaseRect
-        let imageRect = imageViewRect(baseRect: baseRect, canvasSize: canvasSize)
-        let selection = selectionRect(in: imageRect)
-        guard selection.width > 0, selection.height > 0 else { return }
+        let selectionWidth = rect.width * baseRect.width
+        let selectionHeight = rect.height * baseRect.height
+        guard selectionWidth > 0, selectionHeight > 0 else { return }
 
         let fit = min(
-            canvasSize.width / selection.width,
-            canvasSize.height / selection.height
+            canvasSize.width / selectionWidth,
+            canvasSize.height / selectionHeight
         ) * 0.82
         let target = min(max(fit, minZoom), maxZoom)
         zoom = target

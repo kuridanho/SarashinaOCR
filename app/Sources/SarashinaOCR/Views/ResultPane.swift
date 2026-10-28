@@ -6,11 +6,23 @@ struct ResultPane: View {
 
     private var result: StoredResult? { app.selectedResult }
 
+    private var documentFigures: [DocumentFigure] {
+        guard let document = app.selectedDocument else { return [] }
+        return document.pages.flatMap { page in
+            (page.result?.figures ?? []).map { figure in
+                DocumentFigure(page: page, figure: figure)
+            }
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider()
-            if app.resultTab != .document, let result, !result.warnings.isEmpty {
+            if app.resultTab != .document,
+               app.resultTab != .figures,
+               let result,
+               !result.warnings.isEmpty {
                 WarningBanner(warnings: result.warnings)
                 Divider()
             }
@@ -18,6 +30,9 @@ struct ResultPane: View {
             if app.resultTab == .document {
                 Divider()
                 documentFooter
+            } else if app.resultTab == .figures {
+                Divider()
+                figuresFooter
             } else if let result {
                 Divider()
                 footer(result)
@@ -99,9 +114,16 @@ struct ResultPane: View {
             } else {
                 ResultEmptyView()
             }
+        } else if app.resultTab == .figures {
+            if app.isStreamingSelectedPage {
+                ProgressView("生成中…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                FigureGallery(figures: documentFigures)
+            }
         } else if app.isStreamingSelectedPage {
             switch app.resultTab {
-            case .preview, .document:
+            case .preview:
                 MarkdownWebView(
                     markdown: app.streamingMarkdown,
                     baseDirectory: app.previewBaseDirectory,
@@ -110,13 +132,12 @@ struct ResultPane: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             case .raw:
                 StreamingRawView(text: app.streamingMarkdown)
-            case .figures:
-                ProgressView("生成中…")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .document, .figures:
+                EmptyView()
             }
         } else if let result {
             switch app.resultTab {
-            case .preview, .document:
+            case .preview:
                 MarkdownWebView(
                     markdown: result.markdown,
                     baseDirectory: app.previewBaseDirectory,
@@ -129,8 +150,8 @@ struct ResultPane: View {
                     onSave: { app.saveEditedResult($0) }
                 )
                 .id(result.id)
-            case .figures:
-                FigureGallery(figures: result.figures)
+            case .document, .figures:
+                EmptyView()
             }
         } else if app.isRunning {
             VStack(spacing: 10) {
@@ -153,6 +174,20 @@ struct ResultPane: View {
             Label("\(completed)/\(total) ページ", systemImage: "doc.text")
             Spacer()
             Text("ページ番号は原本に準拠")
+                .foregroundStyle(.secondary)
+        }
+        .font(.caption)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+    }
+
+    private var figuresFooter: some View {
+        let figures = documentFigures
+        let pageCount = Set(figures.map(\.page.id)).count
+        return HStack(spacing: 12) {
+            Label("\(figures.count) 個の図", systemImage: "photo.on.rectangle.angled")
+            Spacer()
+            Text("\(pageCount) ページに図あり")
                 .foregroundStyle(.secondary)
         }
         .font(.caption)
@@ -285,10 +320,24 @@ private struct RawEditor: View {
     }
 }
 
+private struct DocumentFigure: Identifiable {
+    let page: PageRecord
+    let figure: FigureInfo
+
+    var id: String { "\(page.id)-\(figure.index)" }
+}
+
+private struct FigurePageGroup: Identifiable {
+    let page: PageRecord
+    var figures: [DocumentFigure]
+
+    var id: String { page.id }
+}
+
 private struct FigureGallery: View {
-    let figures: [FigureInfo]
+    let figures: [DocumentFigure]
     @EnvironmentObject private var app: AppState
-    @State private var editingFigure: FigureInfo?
+    @State private var editingFigure: DocumentFigure?
     @State private var didRunDevFigureCropHook = false
 
     private let columns = [GridItem(.adaptive(minimum: 180, maximum: 280), spacing: 14)]
@@ -300,33 +349,45 @@ private struct FigureGallery: View {
                     Image(systemName: "photo.on.rectangle.angled")
                         .font(.system(size: 30))
                         .foregroundStyle(.secondary)
-                    Text("このページに図はありません")
+                    Text("この文書に図はありません")
+                        .foregroundStyle(.secondary)
+                    Text("図が検出されたページを読み取ると、ここに一覧表示されます。")
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
-                    LazyVGrid(columns: columns, spacing: 14) {
-                        ForEach(figures) { figure in
-                            FigureCard(
-                                figure: figure,
-                                imageURL: imageURL(for: figure),
-                                revision: app.figureCropRevision,
-                                onEdit: canEdit && destinationURL(for: figure) != nil
-                                    ? { editingFigure = figure }
-                                    : nil
-                            )
+                    LazyVStack(alignment: .leading, spacing: 18) {
+                        ForEach(groups) { group in
+                            VStack(alignment: .leading, spacing: 8) {
+                                pageHeader(group)
+                                LazyVGrid(columns: columns, spacing: 14) {
+                                    ForEach(group.figures) { item in
+                                        FigureCard(
+                                            figure: item.figure,
+                                            imageURL: imageURL(for: item.figure),
+                                            revision: app.figureCropRevision,
+                                            onEdit: canEdit(item) && destinationURL(for: item.figure) != nil
+                                                ? { editingFigure = item }
+                                                : nil
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                     .padding(14)
                 }
             }
         }
-        .sheet(item: $editingFigure) { figure in
-            if let page = app.selectedPage {
-                FigureCropSheet(page: page, figure: figure) { bbox in
-                    app.applyFigureCrop(figureIndex: figure.index, bbox: bbox)
-                }
+        .sheet(item: $editingFigure) { item in
+            FigureCropSheet(page: item.page, figure: item.figure) { bbox in
+                app.applyFigureCrop(
+                    pageID: item.page.id,
+                    figureIndex: item.figure.index,
+                    bbox: bbox
+                )
             }
         }
 #if DEBUG
@@ -343,8 +404,48 @@ private struct FigureGallery: View {
 #endif
     }
 
-    private var canEdit: Bool {
-        !app.isRunning && app.selectedPage?.processedPath != nil
+    private var groups: [FigurePageGroup] {
+        var result: [FigurePageGroup] = []
+        for item in figures {
+            if result.last?.page.id == item.page.id {
+                result[result.count - 1].figures.append(item)
+            } else {
+                result.append(FigurePageGroup(page: item.page, figures: [item]))
+            }
+        }
+        return result
+    }
+
+    private func pageHeader(_ group: FigurePageGroup) -> some View {
+        HStack(spacing: 8) {
+            Text("ページ \(group.page.index + 1)")
+                .font(.headline)
+            Text("\(group.figures.count) 個の図")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if group.page.index == app.selectedPageIndex {
+                Text("表示中")
+                    .font(.caption2)
+                    .foregroundStyle(Color.accentColor)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(Color.accentColor.opacity(0.14)))
+            }
+            Spacer()
+            if group.page.index != app.selectedPageIndex {
+                Button("ページを開く") {
+                    app.selectPage(group.page.index)
+                    app.resultTab = .preview
+                }
+                .buttonStyle(.link)
+                .font(.caption)
+                .help("ページタブでこのページを表示します")
+            }
+        }
+    }
+
+    private func canEdit(_ item: DocumentFigure) -> Bool {
+        !app.isRunning && item.page.processedPath != nil
     }
 
     private func destinationURL(for figure: FigureInfo) -> URL? {

@@ -261,7 +261,9 @@ final class AppState: ObservableObject {
         if ProcessInfo.processInfo.environment["SARASHINA_DEV_PREVIEW"] == "document" {
             resultTab = .document
         }
-        if ProcessInfo.processInfo.environment["SARASHINA_DEV_FIGURE_CROP"] == "1" {
+        let showFigures = ProcessInfo.processInfo.environment["SARASHINA_DEV_FIGURES"] == "1"
+        let showFigureCrop = ProcessInfo.processInfo.environment["SARASHINA_DEV_FIGURE_CROP"] == "1"
+        if showFigures || showFigureCrop {
             if let document = documents.first(where: { document in
                 document.pages.contains { !($0.result?.figures.isEmpty ?? true) }
             }), let page = document.pages.first(where: {
@@ -649,11 +651,11 @@ final class AppState: ObservableObject {
         return nil
     }
 
-    /// Re-crops one figure from the current page image without re-running OCR.
-    func applyFigureCrop(figureIndex: Int, bbox: [Double]) {
+    /// Re-crops one figure from its page image without re-running OCR.
+    func applyFigureCrop(pageID: String, figureIndex: Int, bbox: [Double]) {
         guard !isRunning,
               let document = selectedDocument,
-              let page = selectedPage,
+              let page = document.pages.first(where: { $0.id == pageID }),
               let processedPath = page.processedPath,
               let result = page.result,
               let figure = result.figures.first(where: { $0.index == figureIndex }),
@@ -678,7 +680,6 @@ final class AppState: ObservableObject {
         guard beginPageEdit() else { return }
 
         let documentID = document.id
-        let pageID = page.id
         let source = URL(fileURLWithPath: processedPath)
         Task {
             defer { pageEditInProgress = false }
@@ -709,7 +710,7 @@ final class AppState: ObservableObject {
                     self.figureCropRevision += 1
                     do {
                         try self.store?.save(current)
-                        self.statusMessage = "図\(figureIndex)の切り取り範囲を更新しました"
+                        self.statusMessage = "ページ \(page.index + 1) の図\(figureIndex)の切り取り範囲を更新しました"
                     } catch {
                         self.lastError = error.localizedDescription
                     }

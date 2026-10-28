@@ -479,3 +479,157 @@ final class PreprocessServiceTests: XCTestCase {
         return data
     }
 }
+
+final class ImportServiceTests: XCTestCase {
+    private var importedIDs: [String] = []
+
+    override func tearDownWithError() throws {
+        for id in importedIDs {
+            try? FileManager.default.removeItem(at: AppPaths.documentDirectory(id: id))
+        }
+        importedIDs.removeAll()
+    }
+
+    func testImportsImageSeriesAsOneDocumentInNaturalOrder() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sarashina-import-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let names = ["scan-10.png", "scan-2.png", "scan-1.png"]
+        for name in names {
+            try makeImage(width: 400, height: 300)
+                .write(to: directory.appendingPathComponent(name))
+        }
+        let urls = names.map { directory.appendingPathComponent($0) }
+        let document = try ImportService.importImages(
+            at: urls,
+            options: ImportService.ImportOptions(applyDocumentDetection: false)
+        )
+        importedIDs.append(document.id)
+
+        XCTAssertEqual(document.kind, "image")
+        XCTAssertEqual(document.pageCount, 3)
+        XCTAssertEqual(document.pages.map(\.index), [0, 1, 2])
+        XCTAssertEqual(document.title, "scan")
+        XCTAssertEqual(
+            document.pages.map { URL(fileURLWithPath: $0.imagePath).lastPathComponent },
+            ["source-001.png", "source-002.png", "source-003.png"]
+        )
+
+        // Natural sort: scan-1, scan-2, scan-10.
+        let thirdPageData = try Data(contentsOf: URL(fileURLWithPath: document.pages[2].imagePath))
+        let scan10Data = try Data(contentsOf: directory.appendingPathComponent("scan-10.png"))
+        XCTAssertEqual(thirdPageData, scan10Data)
+
+        for page in document.pages {
+            let processed = try XCTUnwrap(page.processedPath)
+            let base = try XCTUnwrap(page.cropBasePath)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: processed))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: base))
+        }
+    }
+
+    private func makeImage(width: Int, height: Int) throws -> Data {
+        guard let context = CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { throw NSError(domain: "test", code: 1) }
+        context.setFillColor(CGColor(gray: 1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        context.setFillColor(CGColor(gray: 0, alpha: 1))
+        context.fill(CGRect(x: 40, y: 40, width: width - 80, height: height - 80))
+        guard let image = context.makeImage() else { throw NSError(domain: "test", code: 2) }
+        let rep = NSBitmapImageRep(cgImage: image)
+        guard let data = rep.representation(using: .png, properties: [:]) else {
+            throw NSError(domain: "test", code: 3)
+        }
+        return data
+    }
+}
+
+final class ExportPreviewThinningTests: XCTestCase {
+    func testPreviewThinsRepeatedRunningHeadersAndFooters() {
+        let pages = [
+            page(0, "本文1\n\nPART II  \n組織のなかの人間心理  \n\n160"),
+            page(1, "本文2\n\nCHAPTER 4  \nモチベーションの迷宮への招待  \n\n161"),
+            page(2, "本文3\n\nPART II  \n組織のなかの人間心理  \n\n162"),
+            page(3, "本文4\n\nCHAPTER 4  \nモチベーションの迷宮への招待  \n\n163"),
+            page(4, "本文5\n\n---\n\n**PART II  \n組織のなかの人間心理**\n\n164"),
+            page(5, "本文6\n\nCHAPTER 4  \nモチベーションの迷宮への招待  \n\n165")
+        ]
+        let preview = ExportService.combinedPreviewMarkdown(pages: pages)
+
+        XCTAssertEqual(preview.components(separatedBy: "PART II").count - 1, 1)
+        XCTAssertEqual(
+            preview.components(separatedBy: "モチベーションの迷宮への招待").count - 1,
+            1
+        )
+        for index in 1...6 {
+            XCTAssertTrue(preview.contains("本文\(index)"))
+        }
+        XCTAssertFalse(preview.contains("160"))
+        XCTAssertFalse(preview.contains("165"))
+    }
+
+    func testPreviewThinsThreeConsecutiveFooters() {
+        let pages = [
+            page(0, "本文1\n\n共通フッター"),
+            page(1, "本文2\n\n共通フッター"),
+            page(2, "本文3\n\n共通フッター")
+        ]
+        let preview = ExportService.combinedPreviewMarkdown(pages: pages)
+        XCTAssertEqual(preview.components(separatedBy: "共通フッター").count - 1, 1)
+    }
+
+    func testPreviewKeepsRepeatedTextInTheBody() {
+        let pages = [
+            page(0, "固有1\n\n同じ本文\n\n末尾1"),
+            page(1, "固有2\n\n同じ本文\n\n末尾2"),
+            page(2, "固有3\n\n同じ本文\n\n末尾3")
+        ]
+        let preview = ExportService.combinedPreviewMarkdown(pages: pages)
+        XCTAssertEqual(preview.components(separatedBy: "同じ本文").count - 1, 3)
+    }
+
+    func testPreviewThinsAlternatingFooterInLongDocument() {
+        // A chapter footer that appears every other page (22 of 105 pages in
+        // the real document) is not a consecutive run, so the occurrence
+        // threshold has to catch it.
+        let pages = (0..<40).map { index in
+            if index.isMultiple(of: 2) {
+                return page(index, "本文\(index)\n\nCHAPTER 4  \n交互フッター  \n\n\(index + 1)")
+            }
+            return page(index, "本文\(index)\n\n別の本文\(index)")
+        }
+        let preview = ExportService.combinedPreviewMarkdown(pages: pages)
+        XCTAssertEqual(preview.components(separatedBy: "交互フッター").count - 1, 1)
+        for index in 0..<40 {
+            XCTAssertTrue(preview.contains("本文\(index)"))
+        }
+    }
+
+    private func page(_ index: Int, _ markdown: String) -> PageRecord {
+        PageRecord(
+            id: "p\(index)",
+            index: index,
+            imagePath: "/tmp/\(index).png",
+            processedPath: nil,
+            width: 100,
+            height: 100,
+            ocrState: .done,
+            result: StoredResult(
+                id: "r\(index)",
+                markdown: markdown,
+                raw: markdown,
+                text: markdown,
+                preset: "high",
+                stats: .empty,
+                figures: [],
+                warnings: [],
+                createdAt: 0
+            )
+        )
+    }
+}

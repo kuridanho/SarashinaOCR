@@ -345,10 +345,26 @@ final class AppState: ObservableObject {
         isImporting = true
         statusMessage = "取り込み中…"
         let options = ImportService.ImportOptions(applyDocumentDetection: applyDocumentDetection)
+        let imageURLs = urls.filter { !ImportService.isPDF($0) }
+        let pdfURLs = urls.filter { ImportService.isPDF($0) }
         Task {
             var imported: [DocumentRecord] = []
             var errors: [String] = []
-            for url in urls {
+
+            // A group of images selected together becomes one document with
+            // one page per image, in natural filename order.
+            if !imageURLs.isEmpty {
+                do {
+                    let document = try await Task.detached(priority: .userInitiated) {
+                        try ImportService.importImages(at: imageURLs, options: options)
+                    }.value
+                    imported.append(document)
+                } catch {
+                    errors.append("画像: \(error.localizedDescription)")
+                }
+            }
+
+            for url in pdfURLs {
                 do {
                     let document = try await Task.detached(priority: .userInitiated) {
                         try ImportService.importFile(at: url, options: options)
@@ -358,6 +374,7 @@ final class AppState: ObservableObject {
                     errors.append("\(url.lastPathComponent): \(error.localizedDescription)")
                 }
             }
+
             await MainActor.run {
                 for document in imported {
                     do {
@@ -372,7 +389,13 @@ final class AppState: ObservableObject {
                     self.selectedPageIndex = 0
                 }
                 self.isImporting = false
-                self.statusMessage = imported.isEmpty ? "取り込みに失敗しました" : "取り込みました"
+                if imported.isEmpty {
+                    self.statusMessage = "取り込みに失敗しました"
+                } else if imageURLs.count > 1, imported.count == 1 {
+                    self.statusMessage = "\(imageURLs.count) 枚の画像を 1 つの書類として取り込みました"
+                } else {
+                    self.statusMessage = "取り込みました"
+                }
                 if !errors.isEmpty {
                     self.lastError = errors.joined(separator: "\n")
                 }
@@ -508,7 +531,7 @@ final class AppState: ObservableObject {
 
         let baseURL = cropBaseURL(for: page, in: document)
         if !FileManager.default.fileExists(atPath: baseURL.path) {
-            let source = URL(fileURLWithPath: document.sourcePath)
+            let source = URL(fileURLWithPath: document.kind == "pdf" ? document.sourcePath : page.imagePath)
             let kind = document.kind
             let pageIndex = page.index
             try await Task.detached(priority: .userInitiated) {

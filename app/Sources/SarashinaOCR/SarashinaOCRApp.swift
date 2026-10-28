@@ -87,7 +87,7 @@ struct SarashinaCommands: Commands {
 
             Divider()
 
-            Button("Markdown をコピー") { copyMarkdown() }
+            Button("コピー") { copyMarkdown() }
                 .keyboardShortcut("c", modifiers: .command)
                 .disabled(app.selectedResult == nil && !app.isRunning)
             Button("全ページをコピー") { app.copyAllPages() }
@@ -128,11 +128,7 @@ struct SarashinaCommands: Commands {
     }
 
     private func copyMarkdown() {
-        if let textView = focusedTextView, textView.selectedRange().length > 0 {
-            textView.copy(nil)
-        } else {
-            app.copyCurrentMarkdown()
-        }
+        app.copyCurrentSelectionOrMarkdown()
     }
 
     private func previousPage() {

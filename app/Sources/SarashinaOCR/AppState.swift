@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import Foundation
 import UniformTypeIdentifiers
+import WebKit
 
 enum ResultTab: String, CaseIterable, Identifiable {
     case preview
@@ -1240,6 +1241,61 @@ final class AppState: ObservableObject {
     }
 
     // MARK: - Export / clipboard
+
+    /// Copies the focused selection when there is one, otherwise the current
+    /// Markdown. The toolbar button and the ⌘C menu command share this path so
+    /// selecting part of a preview never copies the whole document.
+    func copyCurrentSelectionOrMarkdown() {
+        if let textView = NSApp.keyWindow?.firstResponder as? NSTextView,
+           textView.selectedRange().length > 0 {
+            textView.copy(nil)
+            statusMessage = "選択範囲をコピーしました"
+            return
+        }
+        if let webView = Self.focusedWebView() {
+            copyWebSelection(in: webView) { [weak self] copied in
+                guard let self else { return }
+                if copied {
+                    self.statusMessage = "選択範囲をコピーしました"
+                } else {
+                    self.copyCurrentMarkdown()
+                }
+            }
+            return
+        }
+        copyCurrentMarkdown()
+    }
+
+    private static func focusedWebView() -> WKWebView? {
+        var view = NSApp.keyWindow?.firstResponder as? NSView
+        while let current = view {
+            if let webView = current as? WKWebView {
+                return webView
+            }
+            view = current.superview
+        }
+        return nil
+    }
+
+    /// WKWebView handles `copy:` itself, but sending the action from a menu
+    /// command does not copy its current selection. Use the web selection
+    /// directly and report whether anything was copied.
+    private func copyWebSelection(in webView: WKWebView, completion: @escaping (Bool) -> Void) {
+        let script = """
+        (() => {
+          const selection = window.getSelection();
+          const text = selection ? selection.toString() : "";
+          if (!text) { return ""; }
+          return document.execCommand('copy') ? text : "";
+        })();
+        """
+        webView.evaluateJavaScript(script) { value, _ in
+            let copied = !((value as? String) ?? "").isEmpty
+            DispatchQueue.main.async {
+                completion(copied)
+            }
+        }
+    }
 
     func copyCurrentMarkdown() {
         let markdown = copyableMarkdown

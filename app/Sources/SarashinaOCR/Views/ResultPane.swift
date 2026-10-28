@@ -78,16 +78,16 @@ struct ResultPane: View {
             }
 
             Button {
-                app.copyCurrentMarkdown()
+                app.copyCurrentSelectionOrMarkdown()
             } label: {
                 Image(systemName: "doc.on.doc")
             }
             .buttonStyle(.borderless)
             .disabled(app.copyableMarkdown.isEmpty)
             .help(app.resultTab == .document
-                  ? "全ページの Markdown をクリップボードへコピー (⌘C)"
-                  : "Markdown をクリップボードへコピー (⌘C)")
-            .accessibilityLabel("Markdown をコピー")
+                  ? "選択範囲をコピー（未選択時は全ページの Markdown）"
+                  : "選択範囲をコピー（未選択時は Markdown 全体）")
+            .accessibilityLabel("コピー")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
